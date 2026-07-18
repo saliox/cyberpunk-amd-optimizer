@@ -256,7 +256,8 @@ local function detectLanguage()
     local ok, value = pcall(function()
         return tostring(Game.GetSettingsSystem():GetVar("/language", "OnScreen"):GetValue())
     end)
-    if ok and value and value:lower():find("fr") then return "fr" end
+    if not ok or not value then return "fr" end   -- API indisponible : langue de l'auteur
+    if value:lower():find("fr") then return "fr" end
     return "en"
 end
 
@@ -282,6 +283,9 @@ local Mission = {
     playerMissing = false, -- joueur absent (mort / chargement) détecté
     barkTimer = 0,         -- prochaine réplique radio de combat
     aliveCount = 0,        -- hostiles restants (rafraîchi par enemiesRemain, pour le HUD)
+    testRun = false,       -- run lancée via Jump() : pas de stats ni de record
+    completionNote = nil,  -- chrono/record à afficher avec le message de fin
+    hudDisabled = false,   -- HUD coupé après une erreur ImGui (log unique)
     enemies = {},          -- { id = <entityID>, seen = <bool>, age = <sec>, gone = <bool> }
     mappins = {},
 }
@@ -296,6 +300,14 @@ local function loadStats()
     local ok = pcall(function()
         local f = io.open("stats.json", "r")
         if not f then return end
+        -- garde-fou : un fichier corrompu/énorme ne doit pas geler le chargement
+        local size = f:seek("end")
+        f:seek("set", 0)
+        if size > 65536 then
+            f:close()
+            print("[SURTENSION] stats.json anormalement gros, ignoré.")
+            return
+        end
         local raw = f:read("*a")
         f:close()
         for k, v in string.gmatch(raw or "", '"([%w_]+)"%s*:%s*([%d%.]+)') do
@@ -582,12 +594,17 @@ local function resetMission()
     Mission.playerMissing = false
     Mission.barkTimer = 0
     Mission.aliveCount = 0
+    Mission.testRun = false
+    Mission.completionNote = nil
 end
 
--- Annulation propre : restaure le monde, y compris l'heure si on l'a forcée
-local function cancelMission(message)
+-- Annulation propre : restaure le monde, y compris l'heure si on l'a forcée.
+-- restoreClock=false pour l'annulation après mort/chargement : la sauvegarde
+-- fraîchement chargée a SA propre heure, on ne doit pas lui imposer celle
+-- capturée dans la run abandonnée.
+local function cancelMission(message, restoreClock)
     restoreWorld()
-    if Mission.clockChanged and Mission.savedTime then
+    if restoreClock ~= false and Mission.clockChanged and Mission.savedTime then
         pcall(function()
             Game.GetTimeSystem():SetGameTimeByHMS(Mission.savedTime.h, Mission.savedTime.m, 0)
         end)
@@ -697,7 +714,10 @@ end
 local function updateWave1(delta)
     Mission.timer = Mission.timer + delta
     combatBark(delta)
-    if Mission.timer > 2.0 and not enemiesRemain(delta) then
+    -- appelé chaque frame (une seule fois) : compteur HUD à jour et
+    -- vieillissement des spawns en attente dès le début de la phase
+    local remain = enemiesRemain(delta)
+    if Mission.timer > 2.0 and not remain then
         beginHack()
     elseif Mission.timer >= CONFIG.waveTimeout then
         -- anti soft-lock : ennemi coincé dans le décor, spawn raté…
@@ -757,6 +777,9 @@ end
 local function updateBoss(delta)
     Mission.timer = Mission.timer + delta
     combatBark(delta)
+    -- appelé chaque frame (une seule fois) : compteur HUD à jour dès que
+    -- les renforts attaquent, pas seulement après l'arrivée de GRIDLOCK
+    local remain = enemiesRemain(delta)
 
     -- GRIDLOCK arrive après les renforts, avec annonce
     if not Mission.bossSpawned and Mission.timer >= CONFIG.bossDelay then
@@ -770,7 +793,7 @@ local function updateBoss(delta)
     end
 
     if Mission.bossSpawned and Mission.timer > CONFIG.bossDelay + 3.0
-        and not enemiesRemain(delta) then
+        and not remain then
         startFinale()
     elseif Mission.timer >= CONFIG.waveTimeout then
         despawnEnemies()
@@ -779,8 +802,12 @@ local function updateBoss(delta)
     end
 end
 
--- Chrono de fin de mission : enregistre le score et annonce un record
+-- Chrono de fin de mission : enregistre le score et prépare l'annonce de
+-- record (affichée avec le message de fin, sinon la première réplique
+-- d'épilogue l'écraserait au bout d'une seconde).
+-- Les runs lancées via Jump() sont des tests : jamais comptées.
 local function recordCompletion()
+    if Mission.testRun then return end
     Stats.wins = Stats.wins + 1
     if Mission.ending == "grid" then
         Stats.endGrid = Stats.endGrid + 1
@@ -792,9 +819,10 @@ local function recordCompletion()
         local duration = now - Mission.missionStartedAt
         if Stats.bestTime <= 0 then
             Stats.bestTime = duration
-            screenMessage(L.first_time:format(formatDuration(duration)))
+            Mission.completionNote = L.first_time:format(formatDuration(duration))
         elseif duration < Stats.bestTime then
-            screenMessage(L.new_record:format(formatDuration(duration), formatDuration(Stats.bestTime)))
+            Mission.completionNote = L.new_record:format(
+                formatDuration(duration), formatDuration(Stats.bestTime))
             Stats.bestTime = duration
         end
     end
@@ -839,7 +867,8 @@ local function chooseEnding(ending)
         pcall(function() Game.AddExp("StreetCred", CONFIG.rewardSellCred) end)
     end
 
-    recordCompletion()
+    -- comptabilité : un pépin de stats ne doit jamais casser la fin de mission
+    pcall(recordCompletion)
 end
 
 -- La finale cinématique : répliques de VOLT, puis attente du choix.
@@ -888,7 +917,11 @@ local function updateEpilogue(delta)
     local lines = Mission.ending == "grid" and L.EPILOGUE_GRID or L.EPILOGUE_SELL
     local endAt = Mission.ending == "grid" and 25.0 or 19.0
     if playLines(lines, delta, endAt) then
-        screenMessage(L.mission_done)
+        local done = L.mission_done
+        if Mission.completionNote then
+            done = done .. "  ·  " .. Mission.completionNote
+        end
+        screenMessage(done)
         playSound("ui_jingle_quest_success")
         enterPhase("done")
     end
@@ -920,27 +953,36 @@ local function hudObjective()
     return nil, nil
 end
 
+-- Tout ce qui peut échouer (formats, distances, GetPlayer) est calculé ICI,
+-- avant le moindre Push/Begin ImGui : entre Push et Pop il ne reste que des
+-- appels ImGui, pour qu'une erreur ne laisse jamais la pile déséquilibrée.
 local function drawHud()
     if not CONFIG.hud or HUD_HIDDEN[Mission.phase] then return end
+    -- pas de HUD par-dessus l'écran de mort / chargement / menu principal
+    if Mission.playerMissing or not Game.GetPlayer() then return end
     local objective, detail = hudObjective()
     if not objective then return end
 
+    local barFrac, barText = nil, nil
+    if Mission.phase == "hack" and Mission.hackNear then
+        barFrac = math.min(1.0, Mission.hackProgress / CONFIG.hackDuration)
+        barText = string.format("%d%%", math.floor(barFrac * 100))
+    end
     local screenW = 1920
     pcall(function() screenW = ({ GetDisplayResolution() })[1] or screenW end)
+    local flags = ImGuiWindowFlags.NoTitleBar + ImGuiWindowFlags.AlwaysAutoResize
+        + ImGuiWindowFlags.NoFocusOnAppearing + ImGuiWindowFlags.NoNav
 
     ImGui.SetNextWindowPos(screenW - 340, 120, ImGuiCond.FirstUseEver)
     ImGui.PushStyleColor(ImGuiCol.WindowBg, 0.02, 0.02, 0.04, 0.65)
     ImGui.PushStyleColor(ImGuiCol.Border, 0.99, 0.93, 0.04, 0.55)
     ImGui.PushStyleColor(ImGuiCol.PlotHistogram, 0.30, 0.91, 0.96, 0.9)
-    local flags = ImGuiWindowFlags.NoTitleBar + ImGuiWindowFlags.AlwaysAutoResize
-        + ImGuiWindowFlags.NoFocusOnAppearing + ImGuiWindowFlags.NoNav
     if ImGui.Begin("SURTENSION_HUD", flags) then
         ImGui.TextColored(0.99, 0.93, 0.04, 1.0, "◤ SURTENSION")
         ImGui.Separator()
         ImGui.Text(objective)
-        if Mission.phase == "hack" and Mission.hackNear then
-            local frac = math.min(1.0, Mission.hackProgress / CONFIG.hackDuration)
-            ImGui.ProgressBar(frac, 260, 16, string.format("%d%%", math.floor(frac * 100)))
+        if barFrac then
+            ImGui.ProgressBar(barFrac, 260, 16, barText)
         end
         if detail then
             ImGui.TextColored(0.30, 0.91, 0.96, 1.0, detail)
@@ -975,7 +1017,17 @@ registerForEvent("onShutdown", function()
 end)
 
 registerForEvent("onDraw", function()
-    pcall(drawHud)   -- le HUD ne doit jamais faire tomber le mod
+    if Mission.hudDisabled then return end
+    local ok, err = pcall(drawHud)
+    if not ok then
+        -- Un pcall silencieux qui tourne chaque frame empilerait des styles
+        -- ImGui non dépilés (corruption de l'overlay). On rééquilibre au
+        -- mieux, on log UNE fois, et on coupe le HUD pour la session.
+        Mission.hudDisabled = true
+        pcall(function() ImGui.End() end)
+        pcall(function() ImGui.PopStyleColor(3) end)
+        print("[SURTENSION] HUD désactivé après une erreur ImGui : " .. tostring(err))
+    end
 end)
 
 registerForEvent("onUpdate", function(delta)
@@ -990,7 +1042,7 @@ registerForEvent("onUpdate", function(delta)
         return
     end
     if Mission.playerMissing then
-        cancelMission(L.session_lost)
+        cancelMission(L.session_lost, false)   -- ne pas écraser l'heure du save chargé
         return
     end
 
@@ -1065,7 +1117,7 @@ return {
             return
         end
         cancelMission(nil)   -- teardown complet avant de rejouer une phase
-        Mission.missionStartedAt = wallClock()
+        Mission.testRun = true   -- run de test : ni stats, ni record
         target()
         screenMessage(L.jumped_to .. Mission.phase)
     end,
