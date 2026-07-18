@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------
--- SURTENSION 2.2 — mission custom pour Cyberpunk 2077
+-- SURTENSION 2.3 — mission custom pour Cyberpunk 2077
 --------------------------------------------------------------------------
 -- « Regina » te demande de couper un siphon sur le réseau d'Arroyo.
 -- Sauf que l'appel était usurpé : le siphon était le pare-feu qui
@@ -11,15 +11,15 @@
 --   ☀ LUMIÈRE — réinjecter le cœur et rallumer Night City
 --   🌑 NOIR   — garder le cœur et laisser la ville éteinte
 --
+-- 2.3 : HUD persistant (ImGui), localisation FR/EN auto, statistiques
+-- persistantes (stats.json, meilleur temps), chatter radio en combat.
+--
 -- Requiert : Cyber Engine Tweaks (CET) 1.31+  et  Codeware 1.5+
 -- Installation : copier le dossier "surtension" dans
 --   <jeu>/bin/x64/plugins/cyber_engine_tweaks/mods/
 --
 -- Démarrage : touche configurée dans CET (Bindings > surtension_start)
 --             ou console CET :  GetMod("surtension").Start()
--- IMPORTANT : assigne aussi les touches « Finale — LUMIÈRE » et
--- « Finale — NOIR » pour vivre le choix en cinématique. Sans elles,
--- la mission bascule sur un choix par déplacement (deux marqueurs).
 --------------------------------------------------------------------------
 
 local CONFIG = {
@@ -29,6 +29,10 @@ local CONFIG = {
     objectivePos = { x = -1522.0, y = -978.0, z = 25.0 },  -- transformateur / arène du boss
     gridPos      = { x = -1548.0, y = -1002.0, z = 25.0 }, -- secours FIN LUMIÈRE : console réseau
     sellPos      = { x = -1611.0, y = -882.0,  z = 22.0 }, -- secours FIN NOIR : l'acheteur
+
+    language = "auto",   -- "auto" (langue du jeu), "fr" ou "en"
+    hud      = true,     -- widget d'objectif persistant à l'écran
+    barkInterval = 14.0, -- secondes entre deux répliques radio en combat
 
     -- Ennemis (records TweakDB, hostiles par défaut)
     wave1 = {
@@ -70,6 +74,196 @@ local CONFIG = {
     rewardSellItem  = "Items.Preset_Yinglong_Default", -- SMG intelligent EMP
 }
 
+--------------------------------------------------------------------------
+-- Localisation
+--------------------------------------------------------------------------
+
+local LOCALES = {}
+
+LOCALES.fr = {
+    -- Interface / messages système
+    already_running   = "Mission SURTENSION déjà en cours (touche d'annulation pour recommencer).",
+    aborted           = "Mission SURTENSION annulée.",
+    session_lost      = "Session interrompue — mission SURTENSION annulée. Relance-la quand tu veux.",
+    pos_printed       = "Position affichée dans la console CET.",
+    invalid_choice    = 'Choix invalide — utilise "grid" (☀ lumière) ou "sell" (🌑 noir).',
+    unknown_phase     = "Phase inconnue. Valides : ",
+    jumped_to         = "SURTENSION — saut vers la phase : ",
+    mission_done      = "MISSION ACCOMPLIE — SURTENSION",
+    new_record        = "⏱ NOUVEAU RECORD : %s (précédent : %s)",
+    first_time        = "⏱ Mission bouclée en %s",
+
+    -- Objectifs (messages + HUD)
+    obj_travel        = "Rejoins la sous-station d'Arroyo",
+    obj_wave1         = "Élimine les hostiles",
+    obj_hack_near     = "Maintiens l'override du siphon",
+    obj_hack_far      = "Approche-toi du transformateur",
+    obj_twist         = "…",
+    obj_boss          = "Défends le cœur de VOLT",
+    obj_finale        = "☀ LUMIÈRE ou 🌑 NOIR — ta touche décide",
+    obj_finale_walk   = "Marche vers la fin de ton choix",
+    obj_epilogue      = "…",
+    hud_hostiles      = "Hostiles : %d",
+    hud_distance      = "%d m",
+
+    -- Déroulé
+    wave1_start       = "Maelstrom sur zone — élimine les hostiles !",
+    wave_cleared_hack = "Zone dégagée. Approche-toi du transformateur et lance l'override.",
+    harassers         = "⚠ PATROUILLE MAELSTROM — maintiens l'override sous le feu !",
+    hack_progress     = "OVERRIDE DU SIPHON — %d%%",
+    hack_comeback     = "Reste près du transformateur pour maintenir l'override !",
+    twist_fried       = "Une décharge grille les implants des harceleurs — VOLT nettoie la zone.",
+    boss_incoming     = "⚠ RENFORTS MAELSTROM — DÉFENDS LE CŒUR DE VOLT !",
+    boss_announce     = "⚠⚠ GRIDLOCK — CYBERPSYCHO PORTEUR DU CŒUR ⚠⚠",
+    wave_overload     = "⚡ VOLT surcharge leurs implants — la voie est libre.",
+    boss_overload     = "⚡ VOLT surcharge leurs implants — GRIDLOCK s'effondre.",
+    finale_reminder   = "☀ LUMIÈRE ou 🌑 NOIR — le cœur pulse de plus en plus vite…",
+    fallback_hint     = "Pas de touche assignée ? Deux marqueurs viennent d'apparaître : marche vers ta fin.",
+
+    -- Répliques minutées
+    INTRO = {
+        { at = 0.5,  text = "APPEL ENTRANT — REGINA JONES" },
+        { at = 3.0,  text = "« Regina » : V, gros problème à Arroyo. Un netrunner de Maelstrom siphonne la sous-station Petrochem." },
+        { at = 8.0,  text = "« Regina » : Si le siphon tient encore une heure, tout le district saute. Coupe-le. Cash à la clé." },
+        { at = 13.0, text = "SURTENSION — Rejoins la sous-station d'Arroyo" },
+    },
+    TWIST = {
+        { at = 0.5,  text = "« Regina » : Beau boulot V, le virement arr— arr— arr—" },
+        { at = 3.5,  text = "⚠ SIGNAL USURPÉ — L'APPEL NE VENAIT PAS DE REGINA JONES" },
+        { at = 7.0,  text = "VOLT : Merci, V. Ce « siphon » était le pare-feu qui me retenait depuis 2 ans." },
+        { at = 12.0, text = "VOLT : Je suis le réseau électrique de cette ville. Et tu viens de me libérer." },
+        { at = 17.0, text = "VOLT : Maelstrom arrive pour récupérer mon cœur. Ne les laisse pas faire… on discutera après." },
+    },
+    FINALE = {
+        { at = 1.0,  text = "Le cœur de VOLT pulse dans ta main. Chaque lampadaire du district clignote au même rythme." },
+        { at = 6.0,  text = "VOLT : Le voilà, ton moment, V. Je le sens — tu hésites." },
+        { at = 11.0, text = "VOLT : Réinjecte le cœur… et je redeviens le courant docile de leurs climatiseurs." },
+        { at = 16.5, text = "VOLT : Ou garde-le. Et je t'offre tout ce que j'ai siphonné. La ville, elle, apprendra le noir." },
+        { at = 22.0, text = "☀ LUMIÈRE ou 🌑 NOIR — appuie sur ta touche. Le district retient son souffle." },
+    },
+    EPILOGUE_GRID = {
+        { at = 1.0,  text = "Tu écrases le cœur dans le port de la console réseau. VOLT hurle dans tous les haut-parleurs d'Arroyo." },
+        { at = 5.5,  text = "SURTENSION INVERSÉE — le réseau réabsorbe VOLT, bloc par bloc, tour par tour." },
+        { at = 10.0, text = "Night City se rallume. L'aube se lève sur Arroyo." },
+        { at = 14.0, text = "APPEL ENTRANT — REGINA JONES (authentifié)" },
+        { at = 16.5, text = "Regina : V ? C'est la VRAIE Regina. Je n'ai jamais passé cet appel… mais tu viens de sauver le district." },
+        { at = 21.5, text = "Regina : Je te dois une explication — et un dédommagement. Regarde ton garage." },
+    },
+    EPILOGUE_SELL = {
+        { at = 1.0,  text = "Tu refermes les doigts sur le cœur. Les lampadaires s'éteignent un à un, comme une haie d'honneur." },
+        { at = 5.5,  text = "VOLT : Marché conclu. Les eddies que j'ai siphonnés sont à toi — tous." },
+        { at = 10.5, text = "VOLT : On se reverra, V. Je suis dans chaque câble de cette ville, maintenant." },
+        { at = 15.0, text = "VOLT : Profite de la vue. Night City est tellement plus belle éteinte." },
+    },
+
+    -- Chatter radio en combat (choisi au hasard)
+    BARKS = {
+        "Radio Maelstrom : « Le siphon lâche ! Butez ce mercenaire ! »",
+        "VOLT : Ils ont peur, V. Je le lis dans leurs optiques.",
+        "Radio Maelstrom : « Royce va nous écorcher si on perd ce cœur ! »",
+        "VOLT : Chaque étincelle que tu vois, c'est moi qui applaudis.",
+        "Radio Maelstrom : « C'est qui ce psycho ?! Il démonte tout ! »",
+        "VOLT : Le réseau chante ce soir. Continue.",
+    },
+}
+
+LOCALES.en = {
+    already_running   = "SURTENSION mission already running (use the abort hotkey to restart).",
+    aborted           = "SURTENSION mission aborted.",
+    session_lost      = "Session interrupted — SURTENSION mission cancelled. Restart it anytime.",
+    pos_printed       = "Position printed to the CET console.",
+    invalid_choice    = 'Invalid choice — use "grid" (☀ light) or "sell" (🌑 dark).',
+    unknown_phase     = "Unknown phase. Valid: ",
+    jumped_to         = "SURTENSION — jumping to phase: ",
+    mission_done      = "MISSION ACCOMPLISHED — SURTENSION",
+    new_record        = "⏱ NEW RECORD: %s (previous: %s)",
+    first_time        = "⏱ Mission completed in %s",
+
+    obj_travel        = "Reach the Arroyo substation",
+    obj_wave1         = "Eliminate the hostiles",
+    obj_hack_near     = "Sustain the siphon override",
+    obj_hack_far      = "Get close to the transformer",
+    obj_twist         = "…",
+    obj_boss          = "Defend VOLT's core",
+    obj_finale        = "☀ LIGHT or 🌑 DARK — your hotkey decides",
+    obj_finale_walk   = "Walk to the ending of your choice",
+    obj_epilogue      = "…",
+    hud_hostiles      = "Hostiles: %d",
+    hud_distance      = "%d m",
+
+    wave1_start       = "Maelstrom on site — eliminate the hostiles!",
+    wave_cleared_hack = "Zone cleared. Get close to the transformer and start the override.",
+    harassers         = "⚠ MAELSTROM PATROL — hold the override under fire!",
+    hack_progress     = "SIPHON OVERRIDE — %d%%",
+    hack_comeback     = "Stay close to the transformer to sustain the override!",
+    twist_fried       = "A discharge fries the patrol's implants — VOLT clears the zone.",
+    boss_incoming     = "⚠ MAELSTROM REINFORCEMENTS — DEFEND VOLT'S CORE!",
+    boss_announce     = "⚠⚠ GRIDLOCK — CYBERPSYCHO CARRYING THE CORE ⚠⚠",
+    wave_overload     = "⚡ VOLT overloads their implants — the way is clear.",
+    boss_overload     = "⚡ VOLT overloads their implants — GRIDLOCK collapses.",
+    finale_reminder   = "☀ LIGHT or 🌑 DARK — the core is pulsing faster and faster…",
+    fallback_hint     = "No hotkey bound? Two markers just appeared: walk to your ending.",
+
+    INTRO = {
+        { at = 0.5,  text = "INCOMING CALL — REGINA JONES" },
+        { at = 3.0,  text = "\"Regina\": V, big trouble in Arroyo. A Maelstrom netrunner is siphoning the Petrochem substation." },
+        { at = 8.0,  text = "\"Regina\": If that siphon holds another hour, the whole district blows. Cut it. Cash on delivery." },
+        { at = 13.0, text = "SURTENSION — Reach the Arroyo substation" },
+    },
+    TWIST = {
+        { at = 0.5,  text = "\"Regina\": Nice work V, the transfer is co— co— co—" },
+        { at = 3.5,  text = "⚠ SPOOFED SIGNAL — THE CALL NEVER CAME FROM REGINA JONES" },
+        { at = 7.0,  text = "VOLT: Thank you, V. That \"siphon\" was the firewall that held me for 2 years." },
+        { at = 12.0, text = "VOLT: I am this city's power grid. And you just set me free." },
+        { at = 17.0, text = "VOLT: Maelstrom is coming for my core. Don't let them take it… we'll talk after." },
+    },
+    FINALE = {
+        { at = 1.0,  text = "VOLT's core pulses in your hand. Every streetlight in the district blinks to the same beat." },
+        { at = 6.0,  text = "VOLT: There it is, V — your moment. I can feel you hesitating." },
+        { at = 11.0, text = "VOLT: Reinject the core… and I go back to being the tame current in their AC units." },
+        { at = 16.5, text = "VOLT: Or keep it. I'll give you everything I siphoned. And the city learns the dark." },
+        { at = 22.0, text = "☀ LIGHT or 🌑 DARK — press your key. The district is holding its breath." },
+    },
+    EPILOGUE_GRID = {
+        { at = 1.0,  text = "You crush the core into the grid console's port. VOLT screams through every speaker in Arroyo." },
+        { at = 5.5,  text = "SURGE REVERSED — the grid reabsorbs VOLT, block by block, tower by tower." },
+        { at = 10.0, text = "Night City lights back up. Dawn breaks over Arroyo." },
+        { at = 14.0, text = "INCOMING CALL — REGINA JONES (authenticated)" },
+        { at = 16.5, text = "Regina: V? This is the REAL Regina. I never made that call… but you just saved the district." },
+        { at = 21.5, text = "Regina: I owe you an explanation — and compensation. Check your garage." },
+    },
+    EPILOGUE_SELL = {
+        { at = 1.0,  text = "You close your fingers around the core. The streetlights die one by one, like an honor guard." },
+        { at = 5.5,  text = "VOLT: Deal sealed. The eddies I siphoned are yours — all of them." },
+        { at = 10.5, text = "VOLT: We'll meet again, V. I live in every cable of this city now." },
+        { at = 15.0, text = "VOLT: Enjoy the view. Night City is so much prettier in the dark." },
+    },
+
+    BARKS = {
+        "Maelstrom radio: \"The siphon's dying! Waste that merc!\"",
+        "VOLT: They're afraid, V. I can read it in their optics.",
+        "Maelstrom radio: \"Royce will skin us if we lose that core!\"",
+        "VOLT: Every spark you see is me applauding.",
+        "Maelstrom radio: \"Who IS this psycho?! They're tearing us apart!\"",
+        "VOLT: The grid is singing tonight. Keep going.",
+    },
+}
+
+local L = LOCALES.fr   -- résolu dans onInit (CONFIG.language / langue du jeu)
+
+local function detectLanguage()
+    if LOCALES[CONFIG.language] then return CONFIG.language end
+    local ok, value = pcall(function()
+        return tostring(Game.GetSettingsSystem():GetVar("/language", "OnScreen"):GetValue())
+    end)
+    if ok and value and value:lower():find("fr") then return "fr" end
+    return "en"
+end
+
+--------------------------------------------------------------------------
+-- État de mission
+--------------------------------------------------------------------------
+
 local Mission = {
     phase = "idle", -- idle > intro > travel > wave1 > hack > twist > boss > finale > epilogue > done
     timer = 0,
@@ -82,12 +276,53 @@ local Mission = {
     ending = nil,          -- "grid" (lumière) ou "sell" (noir)
     fallbackChoice = false, -- true si la finale est passée en choix par déplacement
     finaleStartedAt = nil, -- horloge murale (os.time) au début de la finale
+    missionStartedAt = nil,-- horloge murale au lancement (pour le chrono)
     clockChanged = false,  -- true si la mission a forcé l'heure du jeu
     savedTime = nil,       -- {h, m} capturés avant le blackout, pour l'annulation
     playerMissing = false, -- joueur absent (mort / chargement) détecté
+    barkTimer = 0,         -- prochaine réplique radio de combat
+    aliveCount = 0,        -- hostiles restants (rafraîchi par enemiesRemain, pour le HUD)
     enemies = {},          -- { id = <entityID>, seen = <bool>, age = <sec>, gone = <bool> }
     mappins = {},
 }
+
+--------------------------------------------------------------------------
+-- Statistiques persistantes (stats.json dans le dossier du mod)
+--------------------------------------------------------------------------
+
+local Stats = { runs = 0, wins = 0, endGrid = 0, endSell = 0, bestTime = 0 }
+
+local function loadStats()
+    local ok = pcall(function()
+        local f = io.open("stats.json", "r")
+        if not f then return end
+        local raw = f:read("*a")
+        f:close()
+        for k, v in string.gmatch(raw or "", '"([%w_]+)"%s*:%s*([%d%.]+)') do
+            if Stats[k] ~= nil then Stats[k] = tonumber(v) or Stats[k] end
+        end
+    end)
+    if not ok then print("[SURTENSION] stats.json illisible, stats réinitialisées.") end
+end
+
+local function saveStats()
+    pcall(function()
+        local parts = {}
+        for k, v in pairs(Stats) do
+            parts[#parts + 1] = string.format('"%s":%s', k, tostring(v))
+        end
+        local f = io.open("stats.json", "w")
+        if f then
+            f:write("{" .. table.concat(parts, ",") .. "}")
+            f:close()
+        end
+    end)
+end
+
+local function formatDuration(seconds)
+    seconds = math.floor(seconds or 0)
+    return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
+end
 
 --------------------------------------------------------------------------
 -- Petites bibliothèques internes
@@ -245,15 +480,16 @@ end
 -- Le spawn Codeware est asynchrone : une entité pas encore résolue compte
 -- comme active tant qu'elle n'a pas dépassé spawnTimeout ; une entité vue
 -- vivante puis devenue introuvable ne bloque plus (nettoyage du moteur).
+-- Met aussi à jour Mission.aliveCount pour le HUD.
 local function enemiesRemain(delta)
     local system = Game.GetDynamicEntitySystem()
-    local remain = false
+    local alive = 0
     for _, e in ipairs(Mission.enemies) do
         if not e.gone then
             local entity = system:GetEntity(e.id)
             if entity then
                 e.seen = true
-                if not isDown(entity) then remain = true end
+                if not isDown(entity) then alive = alive + 1 end
             elseif e.seen then
                 e.gone = true
             else
@@ -262,12 +498,13 @@ local function enemiesRemain(delta)
                     e.gone = true
                     print("[SURTENSION] Spawn jamais matérialisé, ignoré : " .. tostring(e.id))
                 else
-                    remain = true
+                    alive = alive + 1
                 end
             end
         end
     end
-    return remain
+    Mission.aliveCount = alive
+    return alive > 0
 end
 
 local function despawnEnemies()
@@ -279,53 +516,22 @@ local function despawnEnemies()
     -- (Reload All Mods en pleine mission)
     pcall(function() Game.GetDynamicEntitySystem():DeleteTagged("surtension_enemy") end)
     Mission.enemies = {}
+    Mission.aliveCount = 0
+end
+
+-- Réplique radio d'ambiance pendant les phases de combat
+local function combatBark(delta)
+    Mission.barkTimer = Mission.barkTimer + delta
+    if Mission.barkTimer >= CONFIG.barkInterval then
+        Mission.barkTimer = 0
+        local barks = L.BARKS
+        screenMessage(barks[math.random(#barks)])
+    end
 end
 
 --------------------------------------------------------------------------
 -- Répliques minutées
 --------------------------------------------------------------------------
-
-local INTRO_LINES = {
-    { at = 0.5,  text = "APPEL ENTRANT — REGINA JONES" },
-    { at = 3.0,  text = "« Regina » : V, gros problème à Arroyo. Un netrunner de Maelstrom siphonne la sous-station Petrochem." },
-    { at = 8.0,  text = "« Regina » : Si le siphon tient encore une heure, tout le district saute. Coupe-le. Cash à la clé." },
-    { at = 13.0, text = "SURTENSION — Rejoins la sous-station d'Arroyo" },
-}
-
-local TWIST_LINES = {
-    { at = 0.5,  text = "« Regina » : Beau boulot V, le virement arr— arr— arr—" },
-    { at = 3.5,  text = "⚠ SIGNAL USURPÉ — L'APPEL NE VENAIT PAS DE REGINA JONES" },
-    { at = 7.0,  text = "VOLT : Merci, V. Ce « siphon » était le pare-feu qui me retenait depuis 2 ans." },
-    { at = 12.0, text = "VOLT : Je suis le réseau électrique de cette ville. Et tu viens de me libérer." },
-    { at = 17.0, text = "VOLT : Maelstrom arrive pour récupérer mon cœur. Ne les laisse pas faire… on discutera après." },
-}
-
--- La finale cinématique : VOLT te pose la question, en face.
-local FINALE_LINES = {
-    { at = 1.0,  text = "Le cœur de VOLT pulse dans ta main. Chaque lampadaire du district clignote au même rythme." },
-    { at = 6.0,  text = "VOLT : Le voilà, ton moment, V. Je le sens — tu hésites." },
-    { at = 11.0, text = "VOLT : Réinjecte le cœur… et je redeviens le courant docile de leurs climatiseurs." },
-    { at = 16.5, text = "VOLT : Ou garde-le. Et je t'offre tout ce que j'ai siphonné. La ville, elle, apprendra le noir." },
-    { at = 22.0, text = "☀ LUMIÈRE ou 🌑 NOIR — appuie sur ta touche. Le district retient son souffle." },
-}
-
--- Épilogue FIN LUMIÈRE : la réinjection, l'aube, la vraie Regina
-local EPILOGUE_GRID = {
-    { at = 1.0,  text = "Tu écrases le cœur dans le port de la console réseau. VOLT hurle dans tous les haut-parleurs d'Arroyo." },
-    { at = 5.5,  text = "SURTENSION INVERSÉE — le réseau réabsorbe VOLT, bloc par bloc, tour par tour." },
-    { at = 10.0, text = "Night City se rallume. L'aube se lève sur Arroyo." },
-    { at = 14.0, text = "APPEL ENTRANT — REGINA JONES (authentifié)" },
-    { at = 16.5, text = "Regina : V ? C'est la VRAIE Regina. Je n'ai jamais passé cet appel… mais tu viens de sauver le district." },
-    { at = 21.5, text = "Regina : Je te dois une explication — et un dédommagement. Regarde ton garage." },
-}
-
--- Épilogue FIN NOIR : le pacte, la nuit qui reste
-local EPILOGUE_SELL = {
-    { at = 1.0,  text = "Tu refermes les doigts sur le cœur. Les lampadaires s'éteignent un à un, comme une haie d'honneur." },
-    { at = 5.5,  text = "VOLT : Marché conclu. Les eddies que j'ai siphonnés sont à toi — tous." },
-    { at = 10.5, text = "VOLT : On se reverra, V. Je suis dans chaque câble de cette ville, maintenant." },
-    { at = 15.0, text = "VOLT : Profite de la vue. Night City est tellement plus belle éteinte." },
-}
 
 -- Joue une liste de répliques minutées ; rattrape les répliques en retard
 -- après un gros hitch (n'affiche que la dernière due : l'écran ne montre
@@ -355,6 +561,7 @@ local function enterPhase(phase)
     Mission.phase = phase
     Mission.timer = 0
     Mission.step = 0
+    Mission.barkTimer = 0
 end
 
 -- Remise à zéro de tous les champs d'une run (une seule source de vérité)
@@ -369,9 +576,12 @@ local function resetMission()
     Mission.ending = nil
     Mission.fallbackChoice = false
     Mission.finaleStartedAt = nil
+    Mission.missionStartedAt = nil
     Mission.clockChanged = false
     Mission.savedTime = nil
     Mission.playerMissing = false
+    Mission.barkTimer = 0
+    Mission.aliveCount = 0
 end
 
 -- Annulation propre : restaure le monde, y compris l'heure si on l'a forcée
@@ -402,7 +612,7 @@ end
 local function beginWave1()
     enterPhase("wave1")
     clearMappins()
-    screenMessage("Maelstrom sur zone — élimine les hostiles !")
+    screenMessage(L.wave1_start)
     playSound("ui_hacking_access_granted")
     spawnWave(CONFIG.wave1, CONFIG.objectivePos)
     setWeather("24h_weather_storm")   -- orage électrique sur le district
@@ -414,7 +624,7 @@ local function beginHack()
     Mission.hackMsgTimer = 0
     Mission.hackNear = nil
     addMappin(CONFIG.objectivePos)
-    screenMessage("Zone dégagée. Approche-toi du transformateur et lance l'override.")
+    screenMessage(L.wave_cleared_hack)
     playSound("ui_jingle_quest_update")
 end
 
@@ -422,7 +632,7 @@ local function beginTwist()
     -- des harceleurs encore debout ? VOLT s'en charge : la cinématique ne
     -- se joue jamais sous le feu
     if enemiesRemain(0) then
-        screenMessage("Une décharge grille les implants des harceleurs — VOLT nettoie la zone.")
+        screenMessage(L.twist_fried)
     end
     despawnEnemies()
     clearMappins()
@@ -437,7 +647,7 @@ end
 
 local function beginBoss()
     enterPhase("boss")
-    screenMessage("⚠ RENFORTS MAELSTROM — DÉFENDS LE CŒUR DE VOLT !")
+    screenMessage(L.boss_incoming)
     spawnWave(CONFIG.bossAdds, CONFIG.objectivePos)
     playSound("ui_hacking_access_denied")
 end
@@ -460,16 +670,19 @@ end
 
 local function startMission()
     if Mission.phase ~= "idle" and Mission.phase ~= "done" then
-        screenMessage("Mission SURTENSION déjà en cours (touche d'annulation pour recommencer).")
+        screenMessage(L.already_running)
         return
     end
     resetMission()
     restoreWorld()   -- purge d'éventuels restes d'une run précédente
+    Mission.missionStartedAt = wallClock()
+    Stats.runs = Stats.runs + 1
+    saveStats()
     beginIntro()
 end
 
 local function updateIntro(delta)
-    if playLines(INTRO_LINES, delta, 16.0) then
+    if playLines(L.INTRO, delta, 16.0) then
         Game.SetTimeDilation(0)
         beginTravel()
     end
@@ -483,12 +696,13 @@ end
 
 local function updateWave1(delta)
     Mission.timer = Mission.timer + delta
+    combatBark(delta)
     if Mission.timer > 2.0 and not enemiesRemain(delta) then
         beginHack()
     elseif Mission.timer >= CONFIG.waveTimeout then
         -- anti soft-lock : ennemi coincé dans le décor, spawn raté…
         despawnEnemies()
-        screenMessage("⚡ VOLT surcharge leurs implants — la voie est libre.")
+        screenMessage(L.wave_overload)
         beginHack()
     end
 end
@@ -509,14 +723,14 @@ local function updateHack(delta)
             and Mission.hackProgress >= CONFIG.hackDuration * 0.5 then
             Mission.harassersSpawned = true
             spawnWave(CONFIG.hackHarassers, CONFIG.objectivePos)
-            screenMessage("⚠ PATROUILLE MAELSTROM — maintiens l'override sous le feu !")
+            screenMessage(L.harassers)
             playSound("ui_hacking_access_denied")
         end
 
         if Mission.hackMsgTimer >= 2.0 then  -- progression toutes les ~2 s
             Mission.hackMsgTimer = 0
             local pct = math.floor(math.min(100, Mission.hackProgress / CONFIG.hackDuration * 100))
-            screenMessage(("OVERRIDE DU SIPHON — %d%%"):format(pct))
+            screenMessage(L.hack_progress:format(pct))
             playSound("ui_hacking_hackloop")
         end
 
@@ -526,13 +740,15 @@ local function updateHack(delta)
     else
         if Mission.hackMsgTimer >= 5.0 then
             Mission.hackMsgTimer = 0
-            screenMessage("Reste près du transformateur pour maintenir l'override !")
+            screenMessage(L.hack_comeback)
         end
     end
+
+    if Mission.harassersSpawned then enemiesRemain(delta) end   -- compteur HUD
 end
 
 local function updateTwist(delta)
-    if playLines(TWIST_LINES, delta, 20.0) then
+    if playLines(L.TWIST, delta, 20.0) then
         Game.SetTimeDilation(0)
         beginBoss()
     end
@@ -540,6 +756,7 @@ end
 
 local function updateBoss(delta)
     Mission.timer = Mission.timer + delta
+    combatBark(delta)
 
     -- GRIDLOCK arrive après les renforts, avec annonce
     if not Mission.bossSpawned and Mission.timer >= CONFIG.bossDelay then
@@ -548,7 +765,7 @@ local function updateBoss(delta)
             CONFIG.objectivePos.x + CONFIG.spawnRadius,
             CONFIG.objectivePos.y,
             CONFIG.objectivePos.z)
-        screenMessage("⚠⚠ GRIDLOCK — CYBERPSYCHO PORTEUR DU CŒUR ⚠⚠")
+        screenMessage(L.boss_announce)
         playSound("ui_jingle_relic_malfunction")
     end
 
@@ -557,9 +774,31 @@ local function updateBoss(delta)
         startFinale()
     elseif Mission.timer >= CONFIG.waveTimeout then
         despawnEnemies()
-        screenMessage("⚡ VOLT surcharge leurs implants — GRIDLOCK s'effondre.")
+        screenMessage(L.boss_overload)
         startFinale()
     end
+end
+
+-- Chrono de fin de mission : enregistre le score et annonce un record
+local function recordCompletion()
+    Stats.wins = Stats.wins + 1
+    if Mission.ending == "grid" then
+        Stats.endGrid = Stats.endGrid + 1
+    else
+        Stats.endSell = Stats.endSell + 1
+    end
+    local now = wallClock()
+    if now and Mission.missionStartedAt then
+        local duration = now - Mission.missionStartedAt
+        if Stats.bestTime <= 0 then
+            Stats.bestTime = duration
+            screenMessage(L.first_time:format(formatDuration(duration)))
+        elseif duration < Stats.bestTime then
+            screenMessage(L.new_record:format(formatDuration(duration), formatDuration(Stats.bestTime)))
+            Stats.bestTime = duration
+        end
+    end
+    saveStats()
 end
 
 -- Verse les récompenses et lance l'épilogue de la fin choisie.
@@ -573,7 +812,7 @@ local function chooseEnding(ending)
     if Mission.phase ~= "finale" then return end
     local key = ENDING_ALIASES[string.lower(tostring(ending or ""))]
     if not key then
-        screenMessage('Choix invalide — utilise "grid" (☀ lumière) ou "sell" (🌑 noir).')
+        screenMessage(L.invalid_choice)
         return
     end
     Mission.ending = key
@@ -599,6 +838,8 @@ local function chooseEnding(ending)
         Game.AddToInventory(CONFIG.rewardSellItem, 1)
         pcall(function() Game.AddExp("StreetCred", CONFIG.rewardSellCred) end)
     end
+
+    recordCompletion()
 end
 
 -- La finale cinématique : répliques de VOLT, puis attente du choix.
@@ -606,7 +847,7 @@ end
 -- Le timeout est mesuré en temps réel (os.time) pour ne pas être étiré
 -- par le ralenti ×0.35 si le delta d'onUpdate est dilaté.
 local function updateFinale(delta)
-    playLines(FINALE_LINES, delta, 0)
+    playLines(L.FINALE, delta, 0)
 
     local elapsed = Mission.timer
     if Mission.finaleStartedAt then
@@ -616,8 +857,8 @@ local function updateFinale(delta)
 
     if not Mission.fallbackChoice then
         -- rappel pulsé une fois les répliques passées
-        if Mission.step >= #FINALE_LINES and (Mission.timer % 8) < delta then
-            screenMessage("☀ LUMIÈRE ou 🌑 NOIR — le cœur pulse de plus en plus vite…")
+        if Mission.step >= #L.FINALE and (Mission.timer % 8) < delta then
+            screenMessage(L.finale_reminder)
             playSound("ui_menu_onpress")
         end
         -- secours : touches non assignées ? on repasse en choix par déplacement
@@ -632,7 +873,7 @@ local function updateFinale(delta)
             end
             addMappin(CONFIG.gridPos)                                        -- LUMIÈRE
             addMappin(CONFIG.sellPos, gamedataMappinVariant.ExclamationMarkVariant) -- NOIR
-            screenMessage("Pas de touche assignée ? Deux marqueurs viennent d'apparaître : marche vers ta fin.")
+            screenMessage(L.fallback_hint)
         end
     else
         if distanceTo(CONFIG.gridPos) <= CONFIG.reachDistance then
@@ -644,13 +885,69 @@ local function updateFinale(delta)
 end
 
 local function updateEpilogue(delta)
-    local lines = Mission.ending == "grid" and EPILOGUE_GRID or EPILOGUE_SELL
+    local lines = Mission.ending == "grid" and L.EPILOGUE_GRID or L.EPILOGUE_SELL
     local endAt = Mission.ending == "grid" and 25.0 or 19.0
     if playLines(lines, delta, endAt) then
-        screenMessage("MISSION ACCOMPLIE — SURTENSION")
+        screenMessage(L.mission_done)
         playSound("ui_jingle_quest_success")
         enterPhase("done")
     end
+end
+
+--------------------------------------------------------------------------
+-- HUD persistant (ImGui) — objectif courant, progression, hostiles
+--------------------------------------------------------------------------
+
+local HUD_HIDDEN = { idle = true, done = true, intro = true, twist = true, epilogue = true }
+
+local function hudObjective()
+    local phase = Mission.phase
+    if phase == "travel" then
+        return L.obj_travel, L.hud_distance:format(math.floor(distanceTo(CONFIG.objectivePos)))
+    elseif phase == "wave1" then
+        return L.obj_wave1, L.hud_hostiles:format(Mission.aliveCount)
+    elseif phase == "hack" then
+        if Mission.hackNear then
+            return L.obj_hack_near, nil
+        end
+        return L.obj_hack_far, L.hud_distance:format(math.floor(distanceTo(CONFIG.objectivePos)))
+    elseif phase == "boss" then
+        return L.obj_boss, L.hud_hostiles:format(Mission.aliveCount)
+    elseif phase == "finale" then
+        if Mission.fallbackChoice then return L.obj_finale_walk, nil end
+        return L.obj_finale, nil
+    end
+    return nil, nil
+end
+
+local function drawHud()
+    if not CONFIG.hud or HUD_HIDDEN[Mission.phase] then return end
+    local objective, detail = hudObjective()
+    if not objective then return end
+
+    local screenW = 1920
+    pcall(function() screenW = ({ GetDisplayResolution() })[1] or screenW end)
+
+    ImGui.SetNextWindowPos(screenW - 340, 120, ImGuiCond.FirstUseEver)
+    ImGui.PushStyleColor(ImGuiCol.WindowBg, 0.02, 0.02, 0.04, 0.65)
+    ImGui.PushStyleColor(ImGuiCol.Border, 0.99, 0.93, 0.04, 0.55)
+    ImGui.PushStyleColor(ImGuiCol.PlotHistogram, 0.30, 0.91, 0.96, 0.9)
+    local flags = ImGuiWindowFlags.NoTitleBar + ImGuiWindowFlags.AlwaysAutoResize
+        + ImGuiWindowFlags.NoFocusOnAppearing + ImGuiWindowFlags.NoNav
+    if ImGui.Begin("SURTENSION_HUD", flags) then
+        ImGui.TextColored(0.99, 0.93, 0.04, 1.0, "◤ SURTENSION")
+        ImGui.Separator()
+        ImGui.Text(objective)
+        if Mission.phase == "hack" and Mission.hackNear then
+            local frac = math.min(1.0, Mission.hackProgress / CONFIG.hackDuration)
+            ImGui.ProgressBar(frac, 260, 16, string.format("%d%%", math.floor(frac * 100)))
+        end
+        if detail then
+            ImGui.TextColored(0.30, 0.91, 0.96, 1.0, detail)
+        end
+    end
+    ImGui.End()
+    ImGui.PopStyleColor(3)
 end
 
 --------------------------------------------------------------------------
@@ -658,8 +955,12 @@ end
 --------------------------------------------------------------------------
 
 registerForEvent("onInit", function()
-    print("[SURTENSION] Mission 2.2 chargée. Console : GetMod(\"surtension\").Start()")
-    print("[SURTENSION] Pense à assigner les touches Finale LUMIÈRE / NOIR dans CET > Bindings.")
+    L = LOCALES[detectLanguage()] or LOCALES.fr
+    loadStats()
+    print("[SURTENSION] Mission 2.3 chargée (" .. detectLanguage() .. "). Console : GetMod(\"surtension\").Start()")
+    print(("[SURTENSION] Stats : %d runs, %d victoires (☀ %d / 🌑 %d), record %s")
+        :format(Stats.runs, Stats.wins, Stats.endGrid, Stats.endSell,
+                Stats.bestTime > 0 and formatDuration(Stats.bestTime) or "—"))
 end)
 
 -- Reload All Mods / arrêt du jeu en pleine mission : on ne laisse rien
@@ -671,6 +972,10 @@ registerForEvent("onShutdown", function()
         despawnEnemies()
         clearMappins()
     end
+end)
+
+registerForEvent("onDraw", function()
+    pcall(drawHud)   -- le HUD ne doit jamais faire tomber le mod
 end)
 
 registerForEvent("onUpdate", function(delta)
@@ -685,7 +990,7 @@ registerForEvent("onUpdate", function(delta)
         return
     end
     if Mission.playerMissing then
-        cancelMission("Session interrompue — mission SURTENSION annulée. Relance-la quand tu veux.")
+        cancelMission(L.session_lost)
         return
     end
 
@@ -700,26 +1005,26 @@ registerForEvent("onUpdate", function(delta)
     end
 end)
 
-registerHotkey("surtension_start", "SURTENSION — démarrer la mission", startMission)
+registerHotkey("surtension_start", "SURTENSION — démarrer la mission / start mission", startMission)
 
-registerHotkey("surtension_light", "SURTENSION — Finale : ☀ LUMIÈRE (rallumer la ville)", function()
+registerHotkey("surtension_light", "SURTENSION — Finale : ☀ LUMIÈRE / LIGHT", function()
     chooseEnding("grid")
 end)
 
-registerHotkey("surtension_dark", "SURTENSION — Finale : 🌑 NOIR (garder le cœur)", function()
+registerHotkey("surtension_dark", "SURTENSION — Finale : 🌑 NOIR / DARK", function()
     chooseEnding("sell")
 end)
 
-registerHotkey("surtension_pos", "SURTENSION — afficher ma position (console)", function()
+registerHotkey("surtension_pos", "SURTENSION — afficher ma position / print position", function()
     local pos = playerPos()
     if pos then
         print(("[SURTENSION] Position : x = %.1f, y = %.1f, z = %.1f"):format(pos.x, pos.y, pos.z))
-        screenMessage("Position affichée dans la console CET.")
+        screenMessage(L.pos_printed)
     end
 end)
 
-registerHotkey("surtension_abort", "SURTENSION — annuler la mission", function()
-    cancelMission("Mission SURTENSION annulée.")
+registerHotkey("surtension_abort", "SURTENSION — annuler la mission / abort mission", function()
+    cancelMission(L.aborted)
 end)
 
 --------------------------------------------------------------------------
@@ -741,6 +1046,10 @@ local JUMP_TARGETS = {
 return {
     Start = startMission,
     GetPhase = function() return Mission.phase end,
+    GetStats = function()
+        return { runs = Stats.runs, wins = Stats.wins, endGrid = Stats.endGrid,
+                 endSell = Stats.endSell, bestTime = Stats.bestTime }
+    end,
     -- choix de fin depuis la console : Choose("grid"|"light"|"lumière") ou
     -- Choose("sell"|"dark"|"noir")
     Choose = chooseEnding,
@@ -752,11 +1061,12 @@ return {
             local names = {}
             for name in pairs(JUMP_TARGETS) do table.insert(names, name) end
             table.sort(names)
-            screenMessage("Phase inconnue. Valides : " .. table.concat(names, ", "))
+            screenMessage(L.unknown_phase .. table.concat(names, ", "))
             return
         end
         cancelMission(nil)   -- teardown complet avant de rejouer une phase
+        Mission.missionStartedAt = wallClock()
         target()
-        screenMessage("SURTENSION — saut vers la phase : " .. Mission.phase)
+        screenMessage(L.jumped_to .. Mission.phase)
     end,
 }

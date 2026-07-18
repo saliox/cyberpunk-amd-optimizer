@@ -1,8 +1,14 @@
-# ⚡ SURTENSION 2.2 — mission custom pour Cyberpunk 2077
+# ⚡ SURTENSION 2.3 — mission custom pour Cyberpunk 2077
 
 « Regina » te demande de couper un siphon sur le réseau électrique d'Arroyo. Sauf que rien n'est ce qu'il paraît.
 
 Mission scriptée complète en Lua (Cyber Engine Tweaks) : intro cinématique, combat, piratage sous pression, **twist scénaristique**, **boss**, et **double fin à choix** qui change littéralement le ciel de Night City.
+
+**Nouveautés 2.3** :
+- 🖥️ **HUD persistant** (ImGui) : objectif courant, barre de progression du piratage, compteur d'hostiles, distance — visible en jeu en permanence (désactivable : `CONFIG.hud = false`)
+- 🌍 **Localisation FR / EN** complète (répliques comprises), détection automatique de la langue du jeu (`CONFIG.language = "auto" | "fr" | "en"`)
+- 📊 **Statistiques persistantes** (`stats.json` dans le dossier du mod) : runs, victoires, répartition des fins ☀/🌑, **meilleur temps** avec annonce de record en fin de mission — consultables via `GetMod("surtension").GetStats()`
+- 📻 **Chatter radio en combat** : répliques aléatoires de VOLT et de la radio Maelstrom pendant les vagues (`CONFIG.barkInterval`)
 
 > ⚠️ **Spoilers ci-dessous.** Si tu veux jouer la mission à l'aveugle, installe et lance — reviens ici après.
 
