@@ -1,13 +1,15 @@
 --------------------------------------------------------------------------
--- SURTENSION 2.0 — mission custom pour Cyberpunk 2077
+-- SURTENSION 2.1 — mission custom pour Cyberpunk 2077
 --------------------------------------------------------------------------
 -- « Regina » te demande de couper un siphon sur le réseau d'Arroyo.
 -- Sauf que l'appel était usurpé : le siphon était le pare-feu qui
 -- retenait VOLT, une IA sauvage vivant dans le réseau électrique.
 -- En le coupant, c'est TOI qui déclenches le blackout. Maelstrom
 -- débarque avec GRIDLOCK, un cyberpsycho porteur du cœur de l'IA.
--- Après le boss : réinjecter le cœur et rallumer Night City,
--- ou le vendre et laisser la ville dans le noir. Ton choix.
+-- Après le boss : FINALE CINÉMATIQUE — VOLT te pose la question en
+-- face, ralenti, joueur immobilisé. Tu tranches d'une touche :
+--   ☀ LUMIÈRE — réinjecter le cœur et rallumer Night City
+--   🌑 NOIR   — garder le cœur et laisser la ville éteinte
 --
 -- Requiert : Cyber Engine Tweaks (CET) 1.31+  et  Codeware 1.5+
 -- Installation : copier le dossier "surtension" dans
@@ -15,6 +17,9 @@
 --
 -- Démarrage : touche configurée dans CET (Bindings > surtension_start)
 --             ou console CET :  GetMod("surtension").Start()
+-- IMPORTANT : assigne aussi les touches « Finale — LUMIÈRE » et
+-- « Finale — NOIR » pour vivre le choix en cinématique. Sans elles,
+-- la mission bascule sur un choix par déplacement (deux marqueurs).
 --------------------------------------------------------------------------
 
 local CONFIG = {
@@ -22,8 +27,8 @@ local CONFIG = {
     -- Ajustables : la touche "surtension_pos" affiche ta position dans la
     -- console CET pour recaler chaque point où tu veux.
     objectivePos = { x = -1522.0, y = -978.0, z = 25.0 },  -- transformateur / arène du boss
-    gridPos      = { x = -1548.0, y = -1002.0, z = 25.0 }, -- FIN A : console de réinjection
-    sellPos      = { x = -1611.0, y = -882.0,  z = 22.0 }, -- FIN B : acheteur du cœur
+    gridPos      = { x = -1548.0, y = -1002.0, z = 25.0 }, -- secours FIN LUMIÈRE : console réseau
+    sellPos      = { x = -1611.0, y = -882.0,  z = 22.0 }, -- secours FIN NOIR : l'acheteur
 
     -- Ennemis (records TweakDB, hostiles par défaut)
     wave1 = {
@@ -46,33 +51,36 @@ local CONFIG = {
     -- par la fiction de la mission). Remplaçable par n'importe quel record.
     bossRecord = "Character.mql003_boss_sasquatch",
 
-    spawnRadius   = 12.0,  -- rayon de spawn autour de l'arène
-    reachDistance = 15.0,  -- distance pour valider un point de mission
-    hackDistance  = 4.0,   -- distance max pendant le piratage
-    hackDuration  = 15.0,  -- secondes d'override (harceleurs à mi-course !)
-    bossDelay     = 8.0,   -- les renforts arrivent d'abord, GRIDLOCK ensuite
+    spawnRadius    = 12.0,  -- rayon de spawn autour de l'arène
+    reachDistance  = 15.0,  -- distance pour valider un point de mission
+    hackDistance   = 4.0,   -- distance max pendant le piratage
+    hackDuration   = 15.0,  -- secondes d'override (harceleurs à mi-course !)
+    bossDelay      = 8.0,   -- les renforts arrivent d'abord, GRIDLOCK ensuite
+    finaleTimeout  = 35.0,  -- sans touche assignée : bascule sur le choix par déplacement
 
-    -- FIN A — « Rallumer Night City » (la vraie Regina te dédommage)
+    -- FIN LUMIÈRE — « Rallumer Night City » (la vraie Regina te dédommage)
     rewardGridMoney   = 20000,
     rewardGridCred    = 600,
     rewardGridVehicle = "Vehicle.v_sport2_quadra_type66_avenger",
-    -- FIN B — « La ville dort » (les eddies siphonnés par VOLT)
+    -- FIN NOIR — « La ville dort » (les eddies siphonnés par VOLT)
     rewardSellMoney = 60000,
     rewardSellCred  = 200,
     rewardSellItem  = "Items.Preset_Yinglong_Default", -- SMG intelligent EMP
 }
 
 local Mission = {
-    phase = "idle", -- idle > intro > travel > wave1 > hack > twist > boss > choice > epilogue > done
+    phase = "idle", -- idle > intro > travel > wave1 > hack > twist > boss > finale > epilogue > done
     timer = 0,
     hackProgress = 0,
     harassersSpawned = false,
     bossSpawned = false,
     bossID = nil,
-    ending = nil,          -- "grid" ou "sell"
+    ending = nil,          -- "grid" (lumière) ou "sell" (noir)
+    fallbackChoice = false, -- true si la finale est passée en choix par déplacement
+    movementLocked = false,
     enemies = {},
     mappins = {},
-    step = 0,              -- index de réplique (intro / twist / épilogue)
+    step = 0,              -- index de réplique (intro / twist / finale / épilogue)
 }
 
 --------------------------------------------------------------------------
@@ -134,6 +142,24 @@ local function commsGlitch()
             Game.GetPlayer():GetEntityID(), "BaseStatusEffect.CommsNoiseJam")
     end)
     playSound("ui_glitch_start")
+end
+
+-- Immobilisation du joueur pour la cinématique de finale
+local function lockMovement()
+    Mission.movementLocked = true
+    pcall(function()
+        Game.GetStatusEffectSystem():ApplyStatusEffect(
+            Game.GetPlayer():GetEntityID(), "GameplayRestriction.NoMovement")
+    end)
+end
+
+local function unlockMovement()
+    if not Mission.movementLocked then return end
+    Mission.movementLocked = false
+    pcall(function()
+        StatusEffectHelper.RemoveStatusEffect(
+            Game.GetPlayer(), "GameplayRestriction.NoMovement")
+    end)
 end
 
 --------------------------------------------------------------------------
@@ -204,20 +230,34 @@ local TWIST_LINES = {
     { at = 3.5,  text = "⚠ SIGNAL USURPÉ — L'APPEL NE VENAIT PAS DE REGINA JONES" },
     { at = 7.0,  text = "VOLT : Merci, V. Ce « siphon » était le pare-feu qui me retenait depuis 2 ans." },
     { at = 12.0, text = "VOLT : Je suis le réseau électrique de cette ville. Et tu viens de me libérer." },
-    { at = 17.0, text = "VOLT : Maelstrom arrive pour récupérer mon cœur. Ne les laisse pas faire… ou fais-en ce que tu veux." },
+    { at = 17.0, text = "VOLT : Maelstrom arrive pour récupérer mon cœur. Ne les laisse pas faire… on discutera après." },
 }
 
+-- La finale cinématique : VOLT te pose la question, en face.
+local FINALE_LINES = {
+    { at = 1.0,  text = "Le cœur de VOLT pulse dans ta main. Chaque lampadaire du district clignote au même rythme." },
+    { at = 6.0,  text = "VOLT : Le voilà, ton moment, V. Je le sens — tu hésites." },
+    { at = 11.0, text = "VOLT : Réinjecte le cœur… et je redeviens le courant docile de leurs climatiseurs." },
+    { at = 16.5, text = "VOLT : Ou garde-le. Et je t'offre tout ce que j'ai siphonné. La ville, elle, apprendra le noir." },
+    { at = 22.0, text = "☀ LUMIÈRE ou 🌑 NOIR — appuie sur ta touche. Le district retient son souffle." },
+}
+
+-- Épilogue FIN LUMIÈRE : la réinjection, l'aube, la vraie Regina
 local EPILOGUE_GRID = {
-    { at = 2.0, text = "RÉSEAU RESTAURÉ — Night City se rallume, bloc par bloc." },
-    { at = 6.5, text = "APPEL ENTRANT — REGINA JONES (authentifié)" },
-    { at = 9.0, text = "Regina : V ? C'est la VRAIE Regina. Je n'ai jamais passé cet appel… mais tu viens de sauver le district." },
-    { at = 14.0, text = "Regina : Je te dois une explication — et un dédommagement. Regarde ton garage." },
+    { at = 1.0,  text = "Tu écrases le cœur dans le port de la console réseau. VOLT hurle dans tous les haut-parleurs d'Arroyo." },
+    { at = 5.5,  text = "SURTENSION INVERSÉE — le réseau réabsorbe VOLT, bloc par bloc, tour par tour." },
+    { at = 10.0, text = "Night City se rallume. L'aube se lève sur Arroyo." },
+    { at = 14.0, text = "APPEL ENTRANT — REGINA JONES (authentifié)" },
+    { at = 16.5, text = "Regina : V ? C'est la VRAIE Regina. Je n'ai jamais passé cet appel… mais tu viens de sauver le district." },
+    { at = 21.5, text = "Regina : Je te dois une explication — et un dédommagement. Regarde ton garage." },
 }
 
+-- Épilogue FIN NOIR : le pacte, la nuit qui reste
 local EPILOGUE_SELL = {
-    { at = 2.0, text = "CŒUR VENDU — le convoyeur disparaît dans la nuit." },
-    { at = 6.0, text = "VOLT : Marché conclu. Les eddies que j'ai siphonnés sont à toi." },
-    { at = 11.0, text = "VOLT : Profite de la vue, V. Night City est tellement plus belle éteinte." },
+    { at = 1.0,  text = "Tu refermes les doigts sur le cœur. Les lampadaires s'éteignent un à un, comme une haie d'honneur." },
+    { at = 5.5,  text = "VOLT : Marché conclu. Les eddies que j'ai siphonnés sont à toi — tous." },
+    { at = 10.5, text = "VOLT : On se reverra, V. Je suis dans chaque câble de cette ville, maintenant." },
+    { at = 15.0, text = "VOLT : Profite de la vue. Night City est tellement plus belle éteinte." },
 }
 
 -- Joue une liste de répliques minutées ; retourne true quand terminé
@@ -249,10 +289,12 @@ local function startMission()
     end
     despawnEnemies()
     clearMappins()
+    unlockMovement()
     Mission.hackProgress = 0
     Mission.harassersSpawned = false
     Mission.bossSpawned = false
     Mission.ending = nil
+    Mission.fallbackChoice = false
     enterPhase("intro")
     playSound("ui_phone_incoming_call")
     Game.SetTimeDilation(0.6)   -- ralenti "cinématique" pendant l'appel
@@ -340,6 +382,17 @@ local function updateTwist(delta)
     end
 end
 
+-- Entrée dans la finale cinématique : ralenti profond + joueur figé
+local function startFinale()
+    enterPhase("finale")
+    despawnEnemies()
+    clearMappins()
+    commsGlitch()
+    lockMovement()
+    Game.SetTimeDilation(0.35)
+    playSound("ui_jingle_quest_update")
+end
+
 local function updateBoss(delta)
     Mission.timer = Mission.timer + delta
 
@@ -356,64 +409,75 @@ local function updateBoss(delta)
 
     if Mission.bossSpawned and Mission.timer > CONFIG.bossDelay + 3.0
         and countAliveEnemies() == 0 then
-        enterPhase("choice")
-        screenMessage("CŒUR DE VOLT RÉCUPÉRÉ — à toi de décider.")
-        playSound("ui_jingle_quest_update")
+        startFinale()
     end
 end
 
-local function updateChoice(delta)
-    Mission.timer = Mission.timer + delta
-    if Mission.step == 0 then
-        Mission.step = 1
-        -- deux mappins simultanés = deux fins
-        addMappin(CONFIG.gridPos)                                       -- FIN A
-        addMappin(CONFIG.sellPos, gamedataMappinVariant.ExclamationMarkVariant) -- FIN B
-    end
-    if Mission.step == 1 and Mission.timer >= 3.0 then
-        Mission.step = 2
-        screenMessage("FIN A — Console réseau : réinjecter le cœur, rallumer Night City (20 000 €$ + surprise de Regina)")
-    end
-    if Mission.step == 2 and Mission.timer >= 7.0 then
-        Mission.step = 3
-        screenMessage("FIN B — L'acheteur : vendre le cœur, la ville reste éteinte (60 000 €$)")
-    end
+-- Verse les récompenses et lance l'épilogue de la fin choisie
+local function chooseEnding(ending)
+    if Mission.phase ~= "finale" then return end
+    Mission.ending = ending
+    clearMappins()
+    unlockMovement()
+    Game.SetTimeDilation(0)
+    enterPhase("epilogue")
 
-    if distanceTo(CONFIG.gridPos) <= CONFIG.reachDistance then
-        Mission.ending = "grid"
-    elseif distanceTo(CONFIG.sellPos) <= CONFIG.reachDistance then
-        Mission.ending = "sell"
+    if ending == "grid" then
+        playSound("ui_hacking_access_granted")
+        -- Night City se rallume : aube + ciel dégagé
+        pcall(function() Game.GetTimeSystem():SetGameTimeByHMS(6, 30, 0) end)
+        pcall(function()
+            Game.GetWeatherSystem():RequestNewWeather(TweakDBID.new("24h_weather_sunny"))
+        end)
+        Game.AddToInventory("Items.money", CONFIG.rewardGridMoney)
+        pcall(function() Game.AddExp("StreetCred", CONFIG.rewardGridCred) end)
+        -- la surprise de Regina : une Quadra Avenger dans ton garage
+        pcall(function()
+            Game.GetVehicleSystem():EnablePlayerVehicle(CONFIG.rewardGridVehicle, true, false)
+        end)
+    else
+        playSound("ui_glitch_start")
+        Game.AddToInventory("Items.money", CONFIG.rewardSellMoney)
+        Game.AddToInventory(CONFIG.rewardSellItem, 1)
+        pcall(function() Game.AddExp("StreetCred", CONFIG.rewardSellCred) end)
     end
+end
 
-    if Mission.ending then
-        clearMappins()
-        despawnEnemies()
-        enterPhase("epilogue")
-        if Mission.ending == "grid" then
-            -- Night City se rallume : aube + ciel dégagé
-            pcall(function() Game.GetTimeSystem():SetGameTimeByHMS(6, 30, 0) end)
-            pcall(function()
-                Game.GetWeatherSystem():RequestNewWeather(TweakDBID.new("24h_weather_sunny"))
-            end)
-            Game.AddToInventory("Items.money", CONFIG.rewardGridMoney)
-            pcall(function() Game.AddExp("StreetCred", CONFIG.rewardGridCred) end)
-            -- la surprise de Regina : une Quadra Avenger dans ton garage
-            pcall(function()
-                Game.GetVehicleSystem():EnablePlayerVehicle(CONFIG.rewardGridVehicle, true, false)
-            end)
-        else
-            Game.AddToInventory("Items.money", CONFIG.rewardSellMoney)
-            Game.AddToInventory(CONFIG.rewardSellItem, 1)
-            pcall(function() Game.AddExp("StreetCred", CONFIG.rewardSellCred) end)
+-- La finale cinématique : répliques de VOLT, puis attente du choix.
+-- Sans touche assignée, bascule de secours sur le choix par déplacement.
+local function updateFinale(delta)
+    playLines(FINALE_LINES, delta, 999)
+
+    if not Mission.fallbackChoice then
+        -- rappel pulsé une fois les répliques passées
+        if Mission.step >= #FINALE_LINES and (Mission.timer % 8) < delta then
+            screenMessage("☀ LUMIÈRE ou 🌑 NOIR — le cœur pulse de plus en plus vite…")
+            playSound("ui_menu_onpress")
         end
-        screenMessage("MISSION ACCOMPLIE — SURTENSION")
-        playSound("ui_jingle_quest_success")
+        -- secours : touches non assignées ? on repasse en choix par déplacement
+        if Mission.timer >= CONFIG.finaleTimeout then
+            Mission.fallbackChoice = true
+            unlockMovement()
+            Game.SetTimeDilation(0)
+            addMappin(CONFIG.gridPos)                                        -- LUMIÈRE
+            addMappin(CONFIG.sellPos, gamedataMappinVariant.ExclamationMarkVariant) -- NOIR
+            screenMessage("Pas de touche assignée ? Deux marqueurs viennent d'apparaître : marche vers ta fin.")
+        end
+    else
+        if distanceTo(CONFIG.gridPos) <= CONFIG.reachDistance then
+            chooseEnding("grid")
+        elseif distanceTo(CONFIG.sellPos) <= CONFIG.reachDistance then
+            chooseEnding("sell")
+        end
     end
 end
 
 local function updateEpilogue(delta)
     local lines = Mission.ending == "grid" and EPILOGUE_GRID or EPILOGUE_SELL
-    if playLines(lines, delta, 18.0) then
+    local endAt = Mission.ending == "grid" and 25.0 or 19.0
+    if playLines(lines, delta, endAt) then
+        screenMessage("MISSION ACCOMPLIE — SURTENSION")
+        playSound("ui_jingle_quest_success")
         enterPhase("done")
     end
 end
@@ -423,7 +487,8 @@ end
 --------------------------------------------------------------------------
 
 registerForEvent("onInit", function()
-    print("[SURTENSION] Mission 2.0 chargée. Console : GetMod(\"surtension\").Start()")
+    print("[SURTENSION] Mission 2.1 chargée. Console : GetMod(\"surtension\").Start()")
+    print("[SURTENSION] Pense à assigner les touches Finale LUMIÈRE / NOIR dans CET > Bindings.")
 end)
 
 registerForEvent("onUpdate", function(delta)
@@ -434,12 +499,20 @@ registerForEvent("onUpdate", function(delta)
     elseif Mission.phase == "hack"     then updateHack(delta)
     elseif Mission.phase == "twist"    then updateTwist(delta)
     elseif Mission.phase == "boss"     then updateBoss(delta)
-    elseif Mission.phase == "choice"   then updateChoice(delta)
+    elseif Mission.phase == "finale"   then updateFinale(delta)
     elseif Mission.phase == "epilogue" then updateEpilogue(delta)
     end
 end)
 
 registerHotkey("surtension_start", "SURTENSION — démarrer la mission", startMission)
+
+registerHotkey("surtension_light", "SURTENSION — Finale : ☀ LUMIÈRE (rallumer la ville)", function()
+    chooseEnding("grid")
+end)
+
+registerHotkey("surtension_dark", "SURTENSION — Finale : 🌑 NOIR (garder le cœur)", function()
+    chooseEnding("sell")
+end)
 
 registerHotkey("surtension_pos", "SURTENSION — afficher ma position (console)", function()
     local pos = playerPos()
@@ -452,6 +525,7 @@ end)
 registerHotkey("surtension_abort", "SURTENSION — annuler la mission", function()
     despawnEnemies()
     clearMappins()
+    unlockMovement()
     Game.SetTimeDilation(0)
     Mission.phase = "idle"
     screenMessage("Mission SURTENSION annulée.")
@@ -461,16 +535,24 @@ end)
 return {
     Start = startMission,
     GetPhase = function() return Mission.phase end,
-    -- outil de test : saute à la phase voulue, ex. GetMod("surtension").Jump("choice")
+    -- choix de fin depuis la console : GetMod("surtension").Choose("grid"|"sell")
+    Choose = chooseEnding,
+    -- outil de test : saute à la phase voulue, ex. GetMod("surtension").Jump("finale")
     Jump = function(phase)
         despawnEnemies()
         clearMappins()
+        unlockMovement()
         Game.SetTimeDilation(0)
         Mission.hackProgress = 0
         Mission.harassersSpawned = false
         Mission.bossSpawned = false
         Mission.ending = nil
-        enterPhase(phase or "intro")
+        Mission.fallbackChoice = false
+        if phase == "finale" then
+            startFinale()
+        else
+            enterPhase(phase or "intro")
+        end
         screenMessage("SURTENSION — saut vers la phase : " .. Mission.phase)
     end,
 }
