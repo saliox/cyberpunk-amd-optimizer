@@ -1,8 +1,13 @@
 --------------------------------------------------------------------------
--- SURTENSION — mission custom pour Cyberpunk 2077
+-- SURTENSION 2.0 — mission custom pour Cyberpunk 2077
 --------------------------------------------------------------------------
--- Un netrunner de Maelstrom siphonne le réseau électrique d'Arroyo.
--- Regina te contacte : coupe le siphon avant que tout le district saute.
+-- « Regina » te demande de couper un siphon sur le réseau d'Arroyo.
+-- Sauf que l'appel était usurpé : le siphon était le pare-feu qui
+-- retenait VOLT, une IA sauvage vivant dans le réseau électrique.
+-- En le coupant, c'est TOI qui déclenches le blackout. Maelstrom
+-- débarque avec GRIDLOCK, un cyberpsycho porteur du cœur de l'IA.
+-- Après le boss : réinjecter le cœur et rallumer Night City,
+-- ou le vendre et laisser la ville dans le noir. Ton choix.
 --
 -- Requiert : Cyber Engine Tweaks (CET) 1.31+  et  Codeware 1.5+
 -- Installation : copier le dossier "surtension" dans
@@ -13,43 +18,61 @@
 --------------------------------------------------------------------------
 
 local CONFIG = {
-    -- Coordonnées de la mission (zone industrielle d'Arroyo, Santo Domingo).
-    -- Ajustables : la touche "surtension_pos" affiche ta position actuelle
-    -- dans la console CET pour recaler chaque point où tu veux.
-    objectivePos  = { x = -1522.0, y = -978.0, z = 25.0 },  -- transformateur à saboter
-    extractionPos = { x = -1611.0, y = -882.0, z = 22.0 },  -- point d'extraction
+    -- Coordonnées (zone industrielle d'Arroyo, Santo Domingo).
+    -- Ajustables : la touche "surtension_pos" affiche ta position dans la
+    -- console CET pour recaler chaque point où tu veux.
+    objectivePos = { x = -1522.0, y = -978.0, z = 25.0 },  -- transformateur / arène du boss
+    gridPos      = { x = -1548.0, y = -1002.0, z = 25.0 }, -- FIN A : console de réinjection
+    sellPos      = { x = -1611.0, y = -882.0,  z = 22.0 }, -- FIN B : acheteur du cœur
 
-    -- Ennemis (records TweakDB de Maelstrom, hostiles par défaut)
+    -- Ennemis (records TweakDB, hostiles par défaut)
     wave1 = {
         "Character.maelstrom_grunt2_ranged2_copperhead_ma",
         "Character.maelstrom_grunt2_ranged2_copperhead_wa",
         "Character.maelstrom_grunt1_melee1_knife_ma",
         "Character.maelstrom_grunt2_ranged2_pulsar_ma",
     },
-    wave2 = {
-        "Character.maelstrom_grunt2_ranged2_copperhead_ma",
-        "Character.maelstrom_grunt2_ranged2_pulsar_wa",
-        "Character.maelstrom_grunt2_ranged2_copperhead_wa",
+    hackHarassers = {  -- surprise à 50 % du piratage
         "Character.maelstrom_grunt1_melee1_machete_ma",
-        "Character.maelstrom_netrunner1_netrunner1_omaha_ma",
-        "Character.maelstrom_grunt2_ranged2_pulsar_ma",
+        "Character.maelstrom_grunt2_ranged2_copperhead_wa",
     },
-    spawnRadius     = 12.0,   -- rayon de spawn autour de l'objectif
-    reachDistance   = 15.0,   -- distance pour valider "arrivé sur zone"
-    hackDistance    = 4.0,    -- distance pour pirater le transformateur
-    hackDuration    = 12.0,   -- secondes de piratage (sous le feu ennemi !)
-    rewardMoney     = 25000,  -- eddies
-    rewardStreetCred = 400,   -- XP street cred
-    rewardItem      = "Items.Preset_Yinglong_Default", -- SMG intelligent EMP, thème énergie
+    bossAdds = {
+        "Character.maelstrom_grunt2_ranged2_pulsar_wa",
+        "Character.maelstrom_netrunner1_netrunner1_omaha_ma",
+        "Character.maelstrom_grunt2_ranged2_copperhead_ma",
+        "Character.maelstrom_grunt1_melee1_machete_ma",
+    },
+    -- GRIDLOCK : boss lourd au marteau (record du boss Sasquatch, réhabillé
+    -- par la fiction de la mission). Remplaçable par n'importe quel record.
+    bossRecord = "Character.mql003_boss_sasquatch",
+
+    spawnRadius   = 12.0,  -- rayon de spawn autour de l'arène
+    reachDistance = 15.0,  -- distance pour valider un point de mission
+    hackDistance  = 4.0,   -- distance max pendant le piratage
+    hackDuration  = 15.0,  -- secondes d'override (harceleurs à mi-course !)
+    bossDelay     = 8.0,   -- les renforts arrivent d'abord, GRIDLOCK ensuite
+
+    -- FIN A — « Rallumer Night City » (la vraie Regina te dédommage)
+    rewardGridMoney   = 20000,
+    rewardGridCred    = 600,
+    rewardGridVehicle = "Vehicle.v_sport2_quadra_type66_avenger",
+    -- FIN B — « La ville dort » (les eddies siphonnés par VOLT)
+    rewardSellMoney = 60000,
+    rewardSellCred  = 200,
+    rewardSellItem  = "Items.Preset_Yinglong_Default", -- SMG intelligent EMP
 }
 
 local Mission = {
-    phase = "idle",   -- idle > intro > travel > wave1 > hack > wave2 > extract > done
+    phase = "idle", -- idle > intro > travel > wave1 > hack > twist > boss > choice > epilogue > done
     timer = 0,
     hackProgress = 0,
-    enemies = {},     -- entityID Codeware des ennemis vivants
-    mappinID = nil,
-    introStep = 0,
+    harassersSpawned = false,
+    bossSpawned = false,
+    bossID = nil,
+    ending = nil,          -- "grid" ou "sell"
+    enemies = {},
+    mappins = {},
+    step = 0,              -- index de réplique (intro / twist / épilogue)
 }
 
 --------------------------------------------------------------------------
@@ -87,55 +110,71 @@ local function playSound(event)
     pcall(function() Game.GetAudioSystem():Play(event) end)
 end
 
-local function setMappin(p)
+local function addMappin(p, variant)
     local data = MappinData.new()
     data.mappinType = TweakDBID.new("Mappins.DefaultStaticMappin")
-    data.variant = gamedataMappinVariant.QuestGiverVariant
+    data.variant = variant or gamedataMappinVariant.QuestGiverVariant
     data.visibleThroughWalls = true
-    Mission.mappinID = Game.GetMappinSystem():RegisterMappin(data, vec4(p))
+    local id = Game.GetMappinSystem():RegisterMappin(data, vec4(p))
+    table.insert(Mission.mappins, id)
+    return id
 end
 
-local function clearMappin()
-    if Mission.mappinID then
-        Game.GetMappinSystem():UnregisterMappin(Mission.mappinID)
-        Mission.mappinID = nil
+local function clearMappins()
+    for _, id in ipairs(Mission.mappins) do
+        pcall(function() Game.GetMappinSystem():UnregisterMappin(id) end)
     end
+    Mission.mappins = {}
+end
+
+-- Grésillement de comms pendant le twist (sans conséquence si absent)
+local function commsGlitch()
+    pcall(function()
+        Game.GetStatusEffectSystem():ApplyStatusEffect(
+            Game.GetPlayer():GetEntityID(), "BaseStatusEffect.CommsNoiseJam")
+    end)
+    playSound("ui_glitch_start")
 end
 
 --------------------------------------------------------------------------
 -- Gestion des ennemis (Codeware DynamicEntitySystem)
 --------------------------------------------------------------------------
 
+local function spawnAt(record, x, y, z)
+    local spec = DynamicEntitySpec.new()
+    spec.recordID = record
+    spec.appearanceName = "random"
+    spec.position = Vector4.new(x, y, z, 1.0)
+    spec.orientation = Quaternion.new(0, 0, 0, 1)
+    spec.persistState = false
+    spec.persistSpawn = false
+    spec.alwaysSpawned = true
+    spec.tags = { "surtension_enemy" }
+    local id = Game.GetDynamicEntitySystem():CreateEntity(spec)
+    if id then table.insert(Mission.enemies, id) end
+    return id
+end
+
 local function spawnWave(records, center)
-    local system = Game.GetDynamicEntitySystem()
     for i, record in ipairs(records) do
-        -- répartis en cercle autour du point central
         local angle = (i / #records) * 2 * math.pi
-        local spec = DynamicEntitySpec.new()
-        spec.recordID = record
-        spec.appearanceName = "random"
-        spec.position = Vector4.new(
+        spawnAt(record,
             center.x + math.cos(angle) * CONFIG.spawnRadius,
             center.y + math.sin(angle) * CONFIG.spawnRadius,
-            center.z, 1.0)
-        spec.orientation = Quaternion.new(0, 0, 0, 1)
-        spec.persistState = false
-        spec.persistSpawn = false
-        spec.alwaysSpawned = true
-        spec.tags = { "surtension_enemy" }
-        local id = system:CreateEntity(spec)
-        if id then table.insert(Mission.enemies, id) end
+            center.z)
     end
 end
 
+local function isAlive(id)
+    if not id then return false end
+    local entity = Game.GetDynamicEntitySystem():GetEntity(id)
+    return entity ~= nil and not entity:IsDead()
+end
+
 local function countAliveEnemies()
-    local system = Game.GetDynamicEntitySystem()
     local alive = 0
     for _, id in ipairs(Mission.enemies) do
-        local entity = system:GetEntity(id)
-        if entity and not entity:IsDead() then
-            alive = alive + 1
-        end
+        if isAlive(id) then alive = alive + 1 end
     end
     return alive
 end
@@ -146,62 +185,96 @@ local function despawnEnemies()
         pcall(function() system:DeleteEntity(id) end)
     end
     Mission.enemies = {}
+    Mission.bossID = nil
+end
+
+--------------------------------------------------------------------------
+-- Répliques minutées
+--------------------------------------------------------------------------
+
+local INTRO_LINES = {
+    { at = 0.5,  text = "APPEL ENTRANT — REGINA JONES" },
+    { at = 3.0,  text = "« Regina » : V, gros problème à Arroyo. Un netrunner de Maelstrom siphonne la sous-station Petrochem." },
+    { at = 8.0,  text = "« Regina » : Si le siphon tient encore une heure, tout le district saute. Coupe-le. Cash à la clé." },
+    { at = 13.0, text = "SURTENSION — Rejoins la sous-station d'Arroyo" },
+}
+
+local TWIST_LINES = {
+    { at = 0.5,  text = "« Regina » : Beau boulot V, le virement arr— arr— arr—" },
+    { at = 3.5,  text = "⚠ SIGNAL USURPÉ — L'APPEL NE VENAIT PAS DE REGINA JONES" },
+    { at = 7.0,  text = "VOLT : Merci, V. Ce « siphon » était le pare-feu qui me retenait depuis 2 ans." },
+    { at = 12.0, text = "VOLT : Je suis le réseau électrique de cette ville. Et tu viens de me libérer." },
+    { at = 17.0, text = "VOLT : Maelstrom arrive pour récupérer mon cœur. Ne les laisse pas faire… ou fais-en ce que tu veux." },
+}
+
+local EPILOGUE_GRID = {
+    { at = 2.0, text = "RÉSEAU RESTAURÉ — Night City se rallume, bloc par bloc." },
+    { at = 6.5, text = "APPEL ENTRANT — REGINA JONES (authentifié)" },
+    { at = 9.0, text = "Regina : V ? C'est la VRAIE Regina. Je n'ai jamais passé cet appel… mais tu viens de sauver le district." },
+    { at = 14.0, text = "Regina : Je te dois une explication — et un dédommagement. Regarde ton garage." },
+}
+
+local EPILOGUE_SELL = {
+    { at = 2.0, text = "CŒUR VENDU — le convoyeur disparaît dans la nuit." },
+    { at = 6.0, text = "VOLT : Marché conclu. Les eddies que j'ai siphonnés sont à toi." },
+    { at = 11.0, text = "VOLT : Profite de la vue, V. Night City est tellement plus belle éteinte." },
+}
+
+-- Joue une liste de répliques minutées ; retourne true quand terminé
+local function playLines(lines, delta, endAt)
+    Mission.timer = Mission.timer + delta
+    local nextLine = lines[Mission.step + 1]
+    if nextLine and Mission.timer >= nextLine.at then
+        Mission.step = Mission.step + 1
+        screenMessage(nextLine.text)
+        playSound("ui_menu_onpress")
+    end
+    return Mission.timer >= endAt
 end
 
 --------------------------------------------------------------------------
 -- Déroulé de la mission
 --------------------------------------------------------------------------
 
-local INTRO_LINES = {
-    { at = 0.5, text = "APPEL ENTRANT — REGINA JONES" },
-    { at = 3.0, text = "Regina : V, on a un gros problème à Arroyo. Un netrunner de Maelstrom siphonne la sous-station Petrochem." },
-    { at = 8.0, text = "Regina : Si le siphon tient encore une heure, tout le district saute. Coupe-le. Cash à la clé." },
-    { at = 13.0, text = "SURTENSION — Rejoins la sous-station d'Arroyo" },
-}
+local function enterPhase(phase)
+    Mission.phase = phase
+    Mission.timer = 0
+    Mission.step = 0
+end
 
 local function startMission()
     if Mission.phase ~= "idle" and Mission.phase ~= "done" then
         screenMessage("Mission SURTENSION déjà en cours.")
         return
     end
-    Mission.phase = "intro"
-    Mission.timer = 0
-    Mission.introStep = 0
-    Mission.hackProgress = 0
     despawnEnemies()
-    clearMappin()
+    clearMappins()
+    Mission.hackProgress = 0
+    Mission.harassersSpawned = false
+    Mission.bossSpawned = false
+    Mission.ending = nil
+    enterPhase("intro")
     playSound("ui_phone_incoming_call")
-    -- léger ralenti "cinématique" pendant l'appel
-    Game.SetTimeDilation(0.6)
+    Game.SetTimeDilation(0.6)   -- ralenti "cinématique" pendant l'appel
 end
 
 local function updateIntro(delta)
-    Mission.timer = Mission.timer + delta
-    local nextLine = INTRO_LINES[Mission.introStep + 1]
-    if nextLine and Mission.timer >= nextLine.at then
-        Mission.introStep = Mission.introStep + 1
-        screenMessage(nextLine.text)
-        playSound("ui_menu_onpress")
-    end
-    if Mission.timer >= 16.0 then
-        Game.SetTimeDilation(0)   -- fin du ralenti
-        Mission.phase = "travel"
-        Mission.timer = 0
-        setMappin(CONFIG.objectivePos)
+    if playLines(INTRO_LINES, delta, 16.0) then
+        Game.SetTimeDilation(0)
+        enterPhase("travel")
+        addMappin(CONFIG.objectivePos)
         playSound("ui_jingle_quest_update")
     end
 end
 
 local function updateTravel()
     if distanceTo(CONFIG.objectivePos) <= CONFIG.reachDistance then
-        Mission.phase = "wave1"
-        Mission.timer = 0
-        clearMappin()
+        enterPhase("wave1")
+        clearMappins()
         screenMessage("Maelstrom sur zone — élimine les hostiles !")
         playSound("ui_hacking_access_granted")
         spawnWave(CONFIG.wave1, CONFIG.objectivePos)
-        -- ambiance : orage électrique sur le district
-        pcall(function()
+        pcall(function()  -- orage électrique sur le district
             Game.GetWeatherSystem():RequestNewWeather(TweakDBID.new("24h_weather_storm"))
         end)
     end
@@ -209,12 +282,10 @@ end
 
 local function updateWave1(delta)
     Mission.timer = Mission.timer + delta
-    -- laisse 2 s aux spawns avant de compter
     if Mission.timer > 2.0 and countAliveEnemies() == 0 then
-        Mission.phase = "hack"
-        Mission.timer = 0
+        enterPhase("hack")
         Mission.hackProgress = 0
-        setMappin(CONFIG.objectivePos)
+        addMappin(CONFIG.objectivePos)
         screenMessage("Zone dégagée. Approche-toi du transformateur et lance l'override.")
         playSound("ui_jingle_quest_update")
     end
@@ -224,25 +295,33 @@ local function updateHack(delta)
     if distanceTo(CONFIG.objectivePos) <= CONFIG.hackDistance then
         Mission.hackProgress = Mission.hackProgress + delta
         Mission.timer = Mission.timer + delta
-        -- feedback de progression toutes les ~2 s
-        if Mission.timer >= 2.0 then
+
+        -- surprise : des harceleurs débarquent à mi-piratage
+        if not Mission.harassersSpawned
+            and Mission.hackProgress >= CONFIG.hackDuration * 0.5 then
+            Mission.harassersSpawned = true
+            spawnWave(CONFIG.hackHarassers, CONFIG.objectivePos)
+            screenMessage("⚠ PATROUILLE MAELSTROM — maintiens l'override sous le feu !")
+            playSound("ui_hacking_access_denied")
+        end
+
+        if Mission.timer >= 2.0 then  -- progression toutes les ~2 s
             Mission.timer = 0
             local pct = math.floor(math.min(100, Mission.hackProgress / CONFIG.hackDuration * 100))
             screenMessage(("OVERRIDE DU SIPHON — %d%%"):format(pct))
             playSound("ui_hacking_hackloop")
         end
+
         if Mission.hackProgress >= CONFIG.hackDuration then
-            Mission.phase = "wave2"
-            Mission.timer = 0
-            clearMappin()
-            screenMessage("SIPHON COUPÉ — les renforts Maelstrom débarquent. TIENS LA POSITION !")
-            playSound("ui_hacking_access_granted")
-            spawnWave(CONFIG.wave2, CONFIG.objectivePos)
-            -- le "blackout" : nuit noire immédiate sur Night City
+            -- LE TWIST : blackout immédiat + signal usurpé
+            enterPhase("twist")
+            clearMappins()
+            commsGlitch()
+            Game.SetTimeDilation(0.5)
             pcall(function() Game.GetTimeSystem():SetGameTimeByHMS(2, 0, 0) end)
+            playSound("ui_hacking_access_granted")
         end
     else
-        -- le joueur s'est éloigné : la progression gèle, petit rappel
         Mission.timer = Mission.timer + delta
         if Mission.timer >= 5.0 then
             Mission.timer = 0
@@ -251,44 +330,91 @@ local function updateHack(delta)
     end
 end
 
-local function updateWave2(delta)
+local function updateTwist(delta)
+    if playLines(TWIST_LINES, delta, 20.0) then
+        Game.SetTimeDilation(0)
+        enterPhase("boss")
+        screenMessage("⚠ RENFORTS MAELSTROM — DÉFENDS LE CŒUR DE VOLT !")
+        spawnWave(CONFIG.bossAdds, CONFIG.objectivePos)
+        playSound("ui_hacking_access_denied")
+    end
+end
+
+local function updateBoss(delta)
     Mission.timer = Mission.timer + delta
-    if Mission.timer > 2.0 and countAliveEnemies() == 0 then
-        Mission.phase = "extract"
-        Mission.timer = 0
-        setMappin(CONFIG.extractionPos)
-        screenMessage("Renforts éliminés. File au point d'extraction, Regina t'y attend.")
+
+    -- GRIDLOCK arrive après les renforts, avec annonce
+    if not Mission.bossSpawned and Mission.timer >= CONFIG.bossDelay then
+        Mission.bossSpawned = true
+        Mission.bossID = spawnAt(CONFIG.bossRecord,
+            CONFIG.objectivePos.x + CONFIG.spawnRadius,
+            CONFIG.objectivePos.y,
+            CONFIG.objectivePos.z)
+        screenMessage("⚠⚠ GRIDLOCK — CYBERPSYCHO PORTEUR DU CŒUR ⚠⚠")
+        playSound("ui_jingle_relic_malfunction")
+    end
+
+    if Mission.bossSpawned and Mission.timer > CONFIG.bossDelay + 3.0
+        and countAliveEnemies() == 0 then
+        enterPhase("choice")
+        screenMessage("CŒUR DE VOLT RÉCUPÉRÉ — à toi de décider.")
         playSound("ui_jingle_quest_update")
     end
 end
 
-local function finishMission()
-    Mission.phase = "done"
-    clearMappin()
-    despawnEnemies()
-    screenMessage("MISSION ACCOMPLIE — SURTENSION")
-    playSound("ui_jingle_quest_success")
-    -- Récompenses
-    Game.AddToInventory("Items.money", CONFIG.rewardMoney)
-    Game.AddToInventory(CONFIG.rewardItem, 1)
-    pcall(function() Game.AddExp("StreetCred", CONFIG.rewardStreetCred) end)
-    -- Petit épilogue différé via le timer de la phase "done"
-    Mission.timer = 0
-end
+local function updateChoice(delta)
+    Mission.timer = Mission.timer + delta
+    if Mission.step == 0 then
+        Mission.step = 1
+        -- deux mappins simultanés = deux fins
+        addMappin(CONFIG.gridPos)                                       -- FIN A
+        addMappin(CONFIG.sellPos, gamedataMappinVariant.ExclamationMarkVariant) -- FIN B
+    end
+    if Mission.step == 1 and Mission.timer >= 3.0 then
+        Mission.step = 2
+        screenMessage("FIN A — Console réseau : réinjecter le cœur, rallumer Night City (20 000 €$ + surprise de Regina)")
+    end
+    if Mission.step == 2 and Mission.timer >= 7.0 then
+        Mission.step = 3
+        screenMessage("FIN B — L'acheteur : vendre le cœur, la ville reste éteinte (60 000 €$)")
+    end
 
-local function updateExtract()
-    if distanceTo(CONFIG.extractionPos) <= CONFIG.reachDistance then
-        finishMission()
+    if distanceTo(CONFIG.gridPos) <= CONFIG.reachDistance then
+        Mission.ending = "grid"
+    elseif distanceTo(CONFIG.sellPos) <= CONFIG.reachDistance then
+        Mission.ending = "sell"
+    end
+
+    if Mission.ending then
+        clearMappins()
+        despawnEnemies()
+        enterPhase("epilogue")
+        if Mission.ending == "grid" then
+            -- Night City se rallume : aube + ciel dégagé
+            pcall(function() Game.GetTimeSystem():SetGameTimeByHMS(6, 30, 0) end)
+            pcall(function()
+                Game.GetWeatherSystem():RequestNewWeather(TweakDBID.new("24h_weather_sunny"))
+            end)
+            Game.AddToInventory("Items.money", CONFIG.rewardGridMoney)
+            pcall(function() Game.AddExp("StreetCred", CONFIG.rewardGridCred) end)
+            -- la surprise de Regina : une Quadra Avenger dans ton garage
+            pcall(function()
+                Game.GetVehicleSystem():EnablePlayerVehicle(CONFIG.rewardGridVehicle, true, false)
+            end)
+        else
+            Game.AddToInventory("Items.money", CONFIG.rewardSellMoney)
+            Game.AddToInventory(CONFIG.rewardSellItem, 1)
+            pcall(function() Game.AddExp("StreetCred", CONFIG.rewardSellCred) end)
+        end
+        screenMessage("MISSION ACCOMPLIE — SURTENSION")
+        playSound("ui_jingle_quest_success")
     end
 end
 
-local function updateDone(delta)
-    if Mission.timer >= 0 then
-        Mission.timer = Mission.timer + delta
-        if Mission.timer >= 4.0 then
-            screenMessage("Regina : Beau boulot, V. Le district te doit une nuit au frais. Virement effectué.")
-            Mission.timer = -1  -- épilogue joué une seule fois
-        end
+local function updateEpilogue(delta)
+    local lines = Mission.ending == "grid" and EPILOGUE_GRID or EPILOGUE_SELL
+    if playLines(lines, delta, 18.0) then
+        enterPhase("done")
     end
 end
 
@@ -297,18 +423,19 @@ end
 --------------------------------------------------------------------------
 
 registerForEvent("onInit", function()
-    print("[SURTENSION] Mission chargée. Console : GetMod(\"surtension\").Start()")
+    print("[SURTENSION] Mission 2.0 chargée. Console : GetMod(\"surtension\").Start()")
 end)
 
 registerForEvent("onUpdate", function(delta)
-    if Mission.phase == "idle" or not Game.GetPlayer() then return end
-    if     Mission.phase == "intro"   then updateIntro(delta)
-    elseif Mission.phase == "travel"  then updateTravel()
-    elseif Mission.phase == "wave1"   then updateWave1(delta)
-    elseif Mission.phase == "hack"    then updateHack(delta)
-    elseif Mission.phase == "wave2"   then updateWave2(delta)
-    elseif Mission.phase == "extract" then updateExtract()
-    elseif Mission.phase == "done"    then updateDone(delta)
+    if Mission.phase == "idle" or Mission.phase == "done" or not Game.GetPlayer() then return end
+    if     Mission.phase == "intro"    then updateIntro(delta)
+    elseif Mission.phase == "travel"   then updateTravel()
+    elseif Mission.phase == "wave1"    then updateWave1(delta)
+    elseif Mission.phase == "hack"     then updateHack(delta)
+    elseif Mission.phase == "twist"    then updateTwist(delta)
+    elseif Mission.phase == "boss"     then updateBoss(delta)
+    elseif Mission.phase == "choice"   then updateChoice(delta)
+    elseif Mission.phase == "epilogue" then updateEpilogue(delta)
     end
 end)
 
@@ -324,7 +451,7 @@ end)
 
 registerHotkey("surtension_abort", "SURTENSION — annuler la mission", function()
     despawnEnemies()
-    clearMappin()
+    clearMappins()
     Game.SetTimeDilation(0)
     Mission.phase = "idle"
     screenMessage("Mission SURTENSION annulée.")
@@ -334,4 +461,16 @@ end)
 return {
     Start = startMission,
     GetPhase = function() return Mission.phase end,
+    -- outil de test : saute à la phase voulue, ex. GetMod("surtension").Jump("choice")
+    Jump = function(phase)
+        despawnEnemies()
+        clearMappins()
+        Game.SetTimeDilation(0)
+        Mission.hackProgress = 0
+        Mission.harassersSpawned = false
+        Mission.bossSpawned = false
+        Mission.ending = nil
+        enterPhase(phase or "intro")
+        screenMessage("SURTENSION — saut vers la phase : " .. Mission.phase)
+    end,
 }

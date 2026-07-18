@@ -1,20 +1,24 @@
-# ⚡ SURTENSION — mission custom pour Cyberpunk 2077
+# ⚡ SURTENSION 2.0 — mission custom pour Cyberpunk 2077
 
-Un netrunner de Maelstrom siphonne le réseau électrique d'Arroyo. Regina Jones te contacte : coupe le siphon avant que tout le district saute.
+« Regina » te demande de couper un siphon sur le réseau électrique d'Arroyo. Sauf que rien n'est ce qu'il paraît.
 
-Mission scriptée complète en Lua (Cyber Engine Tweaks) : appel d'intro façon cinématique (ralenti + dialogue), trajet avec marqueur, deux vagues de combat, phase de piratage sous pression, blackout du district, extraction et récompenses.
+Mission scriptée complète en Lua (Cyber Engine Tweaks) : intro cinématique, combat, piratage sous pression, **twist scénaristique**, **boss**, et **double fin à choix** qui change littéralement le ciel de Night City.
+
+> ⚠️ **Spoilers ci-dessous.** Si tu veux jouer la mission à l'aveugle, installe et lance — reviens ici après.
 
 ## Déroulé
 
 | Phase | Ce qui se passe |
 |---|---|
-| 📞 Intro | Appel de Regina en ralenti cinématique (60 % de la vitesse), 4 répliques |
-| 🗺️ Trajet | Marqueur de quête vers la sous-station Petrochem (Arroyo) |
+| 📞 Intro | Appel de « Regina » en ralenti cinématique — coupe le siphon de la sous-station Petrochem |
+| 🗺️ Trajet | Marqueur de quête vers Arroyo |
 | 🔫 Vague 1 | 4 Maelstrom défendent le transformateur, orage électrique déclenché |
-| 💻 Piratage | 12 s d'override **en restant collé au transformateur** (progression en %) |
-| ⚡ Blackout + Vague 2 | Le siphon saute, nuit noire immédiate, 6 renforts (dont un netrunner) |
-| 🏃 Extraction | Marqueur vers le point d'extraction |
-| 💰 Récompenses | 25 000 €$ + SMG intelligent **Yinglong** (EMP, thème énergie) + 400 Street Cred |
+| 💻 Piratage | 15 s d'override collé au transformateur — **une patrouille débarque à 50 %** |
+| 🌒 LE TWIST | Le signal était **usurpé**. Le « siphon » était le pare-feu retenant **VOLT**, une IA sauvage vivant dans le réseau. Tu viens de la libérer — blackout immédiat, nuit noire sur Night City |
+| ⚠️ Boss | 4 renforts (dont un netrunner), puis **GRIDLOCK**, cyberpsycho au marteau venu récupérer le cœur de l'IA |
+| ⚖️ Le choix | Deux marqueurs, deux fins — à toi de décider |
+| 🌅 Fin A — « Rallumer Night City » | Réinjecter le cœur : l'aube se lève, ciel dégagé, la vraie Regina appelle. **20 000 €$ + 600 Street Cred + une Quadra Type-66 Avenger dans ton garage** |
+| 🌑 Fin B — « La ville dort » | Vendre le cœur : la ville reste éteinte. **60 000 €$ + 200 Street Cred + SMG intelligent Yinglong (EMP)** |
 
 ## Prérequis
 
@@ -34,18 +38,22 @@ Copier le dossier `surtension/` dans :
 1. En jeu, ouvre CET (`²`/`~`) → **Bindings** → assigne une touche à **« SURTENSION — démarrer la mission »**
 2. Ou dans la console CET : `GetMod("surtension").Start()`
 
-Autres raccourcis disponibles : afficher ta position (pour recaler les points de mission) et annuler la mission.
+Raccourcis : afficher ta position (pour recaler les points de mission) et annuler la mission.
+Pour tester une phase précise : `GetMod("surtension").Jump("boss")` (phases : `intro`, `travel`, `wave1`, `hack`, `twist`, `boss`, `choice`).
 
 ## Personnalisation
 
 Tout est dans le bloc `CONFIG` en tête de `init.lua` :
 
-- `objectivePos` / `extractionPos` — coordonnées des points de mission. Utilise le raccourci **« afficher ma position »** en jeu pour relever les coordonnées exactes de l'endroit qui te plaît (les valeurs par défaut visent la zone industrielle d'Arroyo ; vérifie-les en jeu et ajuste, surtout le `z`).
-- `wave1` / `wave2` — records TweakDB des ennemis (remplace par du Tyger Claws, Animals, MaxTac…)
-- `hackDuration`, `rewardMoney`, `rewardItem`… — difficulté et récompenses
+- `objectivePos` / `gridPos` / `sellPos` — les trois points de mission (arène, fin A, fin B). Utilise le raccourci **« afficher ma position »** en jeu pour relever des coordonnées exactes (les valeurs par défaut visent la zone industrielle d'Arroyo ; vérifie-les en jeu, surtout le `z`).
+- `bossRecord` — GRIDLOCK utilise le record du boss Sasquatch (`Character.mql003_boss_sasquatch`), réhabillé par la fiction. Remplace-le par n'importe quel record de boss.
+- `wave1` / `hackHarassers` / `bossAdds` — les ennemis de chaque vague
+- `hackDuration`, `bossDelay`, récompenses des deux fins…
 
 ## Notes techniques
 
-- Les ennemis sont spawnés via le `DynamicEntitySystem` de Codeware (pas de persistance : un rechargement de sauvegarde nettoie tout).
-- Les objectifs utilisent les `SimpleScreenMessage` natifs et les mappins du jeu — pas d'UI custom à maintenir.
-- La mission est une machine à états dans `onUpdate` ; chaque phase est une fonction courte, facile à étendre (ajouter une vague 3, un boss, un choix de fin…).
+- Ennemis spawnés via le `DynamicEntitySystem` de Codeware (pas de persistance : recharger une sauvegarde nettoie tout).
+- Objectifs en `SimpleScreenMessage` natifs + mappins du jeu — pas d'UI custom à maintenir.
+- Le choix de fin est **spatial** : deux mappins simultanés, la fin se déclenche en marchant vers l'un ou l'autre — pas de menu, pas d'UI.
+- La fin A touche au monde : heure basculée à l'aube + météo dégagée ; la fin B laisse la nuit du blackout en place.
+- Machine à états dans `onUpdate`, une fonction courte par phase — facile d'ajouter une vague, une fin C, un second boss…
