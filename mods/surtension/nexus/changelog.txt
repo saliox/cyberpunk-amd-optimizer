@@ -1,0 +1,32 @@
+2.3.1
+- Fix: Jump() test runs no longer pollute persistent stats (fake unbeatable best time, wins > runs).
+- Fix: death/save-reload cancellation no longer overwrites the freshly loaded save's time of day.
+- Fix: HUD no longer renders over death/loading/main-menu screens; hostiles counter live from the first frame of each combat phase; ImGui errors now rebalance the stack, log once and disable the HUD instead of silently corrupting the overlay.
+- Fix: best-time record announcement moved onto the mission-complete message (was overwritten by the epilogue after 1 second).
+- Hardening: stats.json capped at 64 KB on load; language detection falls back to French if the settings API is unavailable.
+
+2.3
+- Persistent in-game HUD (ImGui): current objective, hack progress bar, hostiles counter, distance.
+- Full French + English localization, auto-detected from game language.
+- Persistent stats (stats.json): runs, wins, ending split, best time with record announcements.
+- Random combat radio chatter (VOLT + Maelstrom radio).
+
+2.2
+- Robust enemy counting: non-lethal takedowns count, async spawns tracked, spawn-failure timeout, 3-minute anti-softlock wave timeout.
+- Death/save-reload detection: mission cancels cleanly instead of auto-completing empty.
+- Central world teardown (movement lock, comms jam, time dilation, weather) on abort, endings, restart, and mod shutdown; game clock captured and restored on abort.
+- Weather calls fixed to the real Codeware API (SetWeather/ResetWeather) — the storm and the dawn actually happen now.
+- Choose() validates its argument (with light/dark aliases); Jump() whitelisted with full per-phase setup.
+- Finale timeout measured in real time; twist cutscene neutralizes remaining harassers first; timed lines catch up after frame hitches.
+
+2.1
+- Cinematic finale: deep slow-mo, player locked, VOLT asks the question face to face, ending chosen by hotkey (☀ LIGHT / 🌑 DARK) with walk-to-marker fallback and console command.
+
+2.0
+- Story twist: the call was spoofed by VOLT, a rogue AI living in the power grid.
+- GRIDLOCK boss fight with reinforcements (including a netrunner).
+- Two endings with world-state consequences (dawn + vehicle reward / permanent blackout + eddies).
+- Mid-hack harasser patrol; Jump() phase-testing tool.
+
+1.0
+- Initial release: scripted mission with intro call, travel, combat wave, hack phase, extraction and rewards.

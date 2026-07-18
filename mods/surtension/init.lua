@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------
--- SURTENSION 2.3 — mission custom pour Cyberpunk 2077
+-- SURTENSION 2.3.1 — mission custom pour Cyberpunk 2077
 --------------------------------------------------------------------------
 -- « Regina » te demande de couper un siphon sur le réseau d'Arroyo.
 -- Sauf que l'appel était usurpé : le siphon était le pare-feu qui
@@ -999,7 +999,7 @@ end
 registerForEvent("onInit", function()
     L = LOCALES[detectLanguage()] or LOCALES.fr
     loadStats()
-    print("[SURTENSION] Mission 2.3 chargée (" .. detectLanguage() .. "). Console : GetMod(\"surtension\").Start()")
+    print("[SURTENSION] Mission 2.3.1 chargée (" .. detectLanguage() .. "). Console : GetMod(\"surtension\").Start()")
     print(("[SURTENSION] Stats : %d runs, %d victoires (☀ %d / 🌑 %d), record %s")
         :format(Stats.runs, Stats.wins, Stats.endGrid, Stats.endSell,
                 Stats.bestTime > 0 and formatDuration(Stats.bestTime) or "—"))
