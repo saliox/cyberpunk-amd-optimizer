@@ -1,4 +1,4 @@
-# ⚡ SURTENSION 2.1 — mission custom pour Cyberpunk 2077
+# ⚡ SURTENSION 2.2 — mission custom pour Cyberpunk 2077
 
 « Regina » te demande de couper un siphon sur le réseau électrique d'Arroyo. Sauf que rien n'est ce qu'il paraît.
 
@@ -40,10 +40,10 @@ Copier le dossier `surtension/` dans :
    - **« SURTENSION — Finale : ☀ LUMIÈRE »** et **« SURTENSION — Finale : 🌑 NOIR »** ← les touches du choix final
 2. Ou dans la console CET : `GetMod("surtension").Start()`
 
-**Si les touches de finale ne sont pas assignées** : au bout de 35 s de cinématique, la mission bascule automatiquement sur un choix de secours par déplacement (deux marqueurs apparaissent, tu marches vers ta fin). Le choix est aussi possible en console : `GetMod("surtension").Choose("grid")` (lumière) ou `Choose("sell")` (noir).
+**Si les touches de finale ne sont pas assignées** : au bout de 35 s de cinématique (mesurées en temps réel, pas en temps de jeu ralenti), la mission bascule automatiquement sur un choix de secours par déplacement (deux marqueurs apparaissent, tu marches vers ta fin). Le choix est aussi possible en console : `GetMod("surtension").Choose("grid")` (lumière) ou `Choose("sell")` (noir) — les alias `light`/`lumière` et `dark`/`noir` sont acceptés, tout autre argument est rejeté avec un message.
 
-Autres raccourcis : afficher ta position (pour recaler les points de mission) et annuler la mission.
-Pour tester une phase précise : `GetMod("surtension").Jump("finale")` (phases : `intro`, `travel`, `wave1`, `hack`, `twist`, `boss`, `finale`).
+Autres raccourcis : afficher ta position (pour recaler les points de mission) et annuler la mission (l'annulation restaure tout : effets, ralenti, météo, heure du jeu).
+Pour tester une phase précise : `GetMod("surtension").Jump("boss")` — phases valides : `intro`, `travel`, `wave1`, `hack`, `twist`, `boss`, `finale` (chaque saut rejoue le vrai setup de la phase : spawns, marqueurs, effets). Pour tester un épilogue : `Jump("finale")` puis `Choose(...)`.
 
 ## Personnalisation
 
@@ -57,8 +57,11 @@ Tout est dans le bloc `CONFIG` en tête de `init.lua` :
 
 ## Notes techniques
 
-- Ennemis spawnés via le `DynamicEntitySystem` de Codeware (pas de persistance : recharger une sauvegarde nettoie tout).
-- Objectifs en `SimpleScreenMessage` natifs + mappins du jeu — pas d'UI custom à maintenir.
-- La **finale cinématique** combine ralenti profond (`SetTimeDilation(0.35)`), immobilisation du joueur (`GameplayRestriction.NoMovement`, retirée à la sortie quoi qu'il arrive) et brouillage de comms — le choix se fait par hotkey, avec double secours (marqueurs au sol après 35 s, ou commande console `Choose`).
-- La fin LUMIÈRE touche au monde : heure basculée à l'aube + météo dégagée ; la fin NOIR laisse la nuit du blackout en place.
-- Machine à états dans `onUpdate`, une fonction courte par phase — facile d'ajouter une vague, une fin C, un second boss…
+- Ennemis spawnés via le `DynamicEntitySystem` de Codeware. Le comptage des vagues est robuste : les PNJ **neutralisés non létalement comptent** (`IsDead` + `IsDefeated`), les spawns asynchrones pas encore matérialisés bloquent la complétion (avec timeout d'échec), et un garde-fou de 3 min fait « griller les implants » des derniers hostiles injoignables (ennemi coincé dans le décor) plutôt que de bloquer la mission.
+- **Mort ou rechargement de sauvegarde en pleine mission** : détecté (disparition du joueur), la mission s'annule proprement au lieu de se compléter à vide — tu la relances quand tu veux.
+- **Teardown central** : un unique `restoreWorld()` (verrou de mouvement, brouillage de comms, ralenti, météo) est appelé par l'annulation, les deux fins, un nouveau départ, et le hook `onShutdown` de CET (Reload All Mods en pleine mission ne laisse rien traîner ; les spawns orphelins sont purgés par tag). L'annulation restaure aussi l'heure du jeu capturée avant le blackout.
+- Météo via l'API **Codeware** `SetWeather`/`ResetWeather` (l'ancienne `RequestNewWeather` n'existe pas dans le jeu).
+- Objectifs en `SimpleScreenMessage` natifs + mappins du jeu — pas d'UI custom à maintenir. Les répliques minutées rattrapent leur retard après un hitch de frame plutôt que de sauter des lignes.
+- La **finale cinématique** combine ralenti profond (`SetTimeDilation(0.35)`), immobilisation du joueur et brouillage de comms — le choix se fait par hotkey, avec double secours (marqueurs au sol après 35 s de temps réel, ou commande console `Choose`). La cinématique du twist neutralise d'abord les harceleurs restants (scénarisé : VOLT grille leurs implants) pour ne jamais se jouer sous le feu.
+- La fin LUMIÈRE touche au monde : heure basculée à l'aube + météo dégagée ; la fin NOIR garde la nuit du blackout (choix narratif) mais rend la météo au cycle naturel.
+- Machine à états dans `onUpdate` avec une fonction d'entrée par phase (`beginX()`) partagée entre le déroulé normal et l'outil de test `Jump` — facile d'ajouter une vague, une fin C, un second boss…
