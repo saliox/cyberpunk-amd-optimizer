@@ -1,0 +1,8 @@
+1.0
+- 15 scripted missions on a generic 9-phase engine (dialogue, travel, wave, hold, boss, defend, collect, race, choice), sequel to SURTENSION.
+- Choices persist and branch the campaign: a Signal/Market alignment derived from your decisions changes dialogue, enemy numbers, ambushes, and whether VOLT assists you in the final boss fight.
+- Cross-mission consequences: selling the witness's shard (ns07) makes the Broker recognize you and bring backup in ns12; sparing the cult (ns09) reveals a different culprit in ns10 and lightens the Voodoo guard in ns14.
+- CODA finale with three endings (return the fragment / sell it / secret Communion). The secret ending must be earned (2 Signal choices); a loyalty bonus rewards the Signal path.
+- Campaign structure: missions unlock as you progress (prerequisite graph ordering choice-missions before their payoffs), a journal (NS.Journal), per-mission best times, and a generated end-of-campaign debrief reflecting your whole run.
+- Robustness inherited from SURTENSION: robust enemy counting (non-lethal takedowns count, async spawns tracked, anti-softlock timeouts), death/save-reload detection with clean cancel, central world teardown on every exit path + onShutdown, balanced-stack ImGui HUD, persistent stats with size guard, full FR/EN localization.
+- Validated by a 37-scenario headless simulation (autoplay of all 15 missions, every branch of the consequences, campaign unlocking/journal/debrief on both paths, failure/abort/session-loss, and negative/audit tests).
