@@ -4,6 +4,17 @@
 -- GetPhaseInfo() — même moteur que jouerait un humain, en accéléré.
 --------------------------------------------------------------------------
 
+-- Par défaut les tests jouent en sélection libre : les tests de mécanique
+-- et de conséquences ne dépendent pas du déverrouillage de campagne, qui
+-- est couvert par des scénarios dédiés (lesquels réactivent le mode
+-- campagne avec SetFreePlay(false)).
+local _origLoadMod = loadMod
+function loadMod()
+    local m = _origLoadMod()
+    m.SetFreePlay(true)
+    return m
+end
+
 -- Invariants de fin : le monde doit être rendu propre
 local function expectCleanWorld(context)
     context = context and (" [" .. context .. "]") or ""
@@ -202,6 +213,57 @@ table.insert(SCENARIOS, { name = "conséquence : alignement Marché → CODA dur
     autoplay(15, "b")
     expect(sawMessage("financé leurs renseignements") or sawMessage("funded their intel"),
         "les renforts conditionnels de CODA sont absents")
+end })
+
+-- Campagne : progression, journal, bilan -----------------------------------
+
+table.insert(SCENARIOS, { name = "campagne : déverrouillage progressif des missions", fn = function()
+    NS = loadMod()
+    NS.SetFreePlay(false)   -- mode campagne réel
+    expect(NS.IsUnlocked(1), "ns01 doit être ouverte d'entrée")
+    expect(not NS.IsUnlocked(2), "ns02 doit être verrouillée au départ")
+    expect(not NS.IsUnlocked(15), "CODA doit être verrouillée au départ")
+    expect(not NS.Start(2), "démarrer une mission verrouillée doit être refusé")
+    expect(NS.GetStatus() == "idle", "un démarrage refusé ne doit rien lancer")
+    expect(sawMessage("verrouillé") or sawMessage("locked"), "message de verrou absent")
+
+    autoplay(1)   -- termine ns01 (l'autoplay recharge le mod en free-play)
+    NS = loadMod(); NS.SetFreePlay(false)
+    expect(NS.IsUnlocked(2), "ns02 doit s'ouvrir après ns01")
+    expect(NS.IsUnlocked(3), "ns03 doit s'ouvrir après ns01")
+    expect(not NS.IsUnlocked(4), "ns04 attend encore ns02")
+end })
+
+table.insert(SCENARIOS, { name = "campagne : le journal reflète statut, choix et verrou", fn = function()
+    autoplay(7, "b")   -- termine ns07, choix b
+    NS = loadMod(); NS.SetFreePlay(false)
+    local j = NS.GetJournal()
+    expect(j[7].status == "done", "ns07 doit être marquée terminée")
+    expect(j[7].choice == "b", "le choix de ns07 doit apparaître au journal")
+    expect(j[12].status == "open", "ns12 doit s'ouvrir après ns07")
+    expect(j[15].status == "locked", "CODA doit rester verrouillée sans ses prérequis")
+    expect(j[1].status == "open", "ns01 doit rester accessible")
+end })
+
+table.insert(SCENARIOS, { name = "campagne : bilan final généré (voie Signal)", fn = function()
+    autoplay(9, "b")    -- signal
+    autoplay(14, "b")   -- signal
+    autoplay(15, "a")   -- CODA fin A (align signal) → bilan
+    expect(sawMessage("BILAN DE CAMPAGNE"), "l'en-tête du bilan est absent")
+    expect(sawMessage("3/15"), "le compte de contrats du bilan est faux")
+    expect(sawMessage("Signal 3"), "l'alignement du bilan est faux")
+    expect(sawMessage("protégé"), "la conclusion de la voie Signal est absente")
+    expect(sawMessage("Rendre le fragment"), "le dernier mot (choix CODA) est absent du bilan")
+end })
+
+table.insert(SCENARIOS, { name = "campagne : bilan final généré (voie Marché)", fn = function()
+    autoplay(7, "b")    -- marché
+    autoplay(9, "a")    -- marché
+    autoplay(15, "b")   -- CODA fin B (align marché)
+    expect(sawMessage("BILAN DE CAMPAGNE"), "l'en-tête du bilan est absent")
+    expect(sawMessage("Marché 3"), "l'alignement Marché du bilan est faux")
+    expect(sawMessage("monnayé"), "la conclusion de la voie Marché est absente")
+    expect(sawMessage("Vendre le fragment"), "le dernier mot (choix CODA B) est absent")
 end })
 
 -- Échecs et interruptions -------------------------------------------------

@@ -26,6 +26,8 @@
 local CONFIG = {
     language = "auto",  -- "auto", "fr" ou "en"
     hud = true,
+    campaign = true,    -- true : les missions se déverrouillent au fil de
+                        -- la progression ; false : sélection libre des 15
     reachDistance = 15.0,
     spawnRadius   = 11.0,
     spawnTimeout  = 20.0,   -- spawn jamais matérialisé => ignoré
@@ -74,6 +76,18 @@ local LOCALES = {
         list_header   = "NIGHT SHIFT — 15 contrats :",
         stats_line    = "%s : %d jouées, %d finies, record %s",
         grid_memory   = "Le réseau se souvient — Signal %d · Marché %d",
+        locked        = "Contrat verrouillé — termine d'abord les missions précédentes.",
+        journal_header = "NIGHT SHIFT — Journal :",
+        st_done       = "TERMINÉE",
+        st_open       = "DISPO",
+        st_locked     = "VERROUILLÉE",
+        recap_header  = "— BILAN DE CAMPAGNE —",
+        recap_done    = "Contrats bouclés : %d/%d",
+        recap_align   = "Le réseau se souvient : Signal %d · Marché %d",
+        recap_signal  = "Tu as protégé ce qui restait de VOLT. Le courant se souviendra de toi.",
+        recap_market  = "Tu as tout monnayé. Night City paie toujours — d'une façon ou d'une autre.",
+        recap_balanced = "Tu as navigué entre les deux. Ni saint, ni vendu. Juste un merc.",
+        recap_coda    = "Ton dernier mot : %s.",
     },
     en = {
         selected      = "Selected mission: %s — %s",
@@ -106,6 +120,18 @@ local LOCALES = {
         list_header   = "NIGHT SHIFT — 15 contracts:",
         stats_line    = "%s: %d played, %d done, best %s",
         grid_memory   = "The grid remembers — Signal %d · Market %d",
+        locked        = "Contract locked — finish the earlier missions first.",
+        journal_header = "NIGHT SHIFT — Journal:",
+        st_done       = "DONE",
+        st_open       = "OPEN",
+        st_locked     = "LOCKED",
+        recap_header  = "— CAMPAIGN DEBRIEF —",
+        recap_done    = "Contracts cleared: %d/%d",
+        recap_align   = "The grid remembers: Signal %d · Market %d",
+        recap_signal  = "You protected what was left of VOLT. The current will remember you.",
+        recap_market  = "You sold it all. Night City always pays — one way or another.",
+        recap_balanced = "You walked the line. Neither saint nor sellout. Just a merc.",
+        recap_coda    = "Your last word: %s.",
     },
 }
 
@@ -578,6 +604,7 @@ M{
     brief = { fr = "Toutes les pistes convergent : il reste un fragment de VOLT. Et il t'attend.",
               en = "Every lead converges: one fragment of VOLT remains. And it's waiting for you." },
     gridMemory = true,   -- affiche l'alignement Signal/Marché au lancement
+    recap = true,        -- annexe le bilan de campagne à l'épilogue
     phases = {
         { type = "goto", pos = { x = -1560.0, y = -1010.0, z = 8.0 },
           objective = { fr = "Descends au collecteur principal, sous Arroyo", en = "Descend to the main collector, under Arroyo" } },
@@ -974,6 +1001,80 @@ local function pickEpilogue(def)
 end
 
 --------------------------------------------------------------------------
+-- Campagne : progression, déverrouillage, journal, bilan
+--------------------------------------------------------------------------
+
+-- Préférence de session : true = sélection libre (ignore le déverrouillage).
+-- Vit hors de Run (n'est pas remis à zéro entre les missions).
+local freePlay = false
+
+-- Prérequis de déverrouillage. Ordonné pour que les missions à choix
+-- précèdent leurs retombées (ns07→ns12, ns09→ns10→ns14) et que CODA
+-- clôture les trois grands fils.
+local UNLOCK = {
+    ns02 = { "ns01" }, ns03 = { "ns01" },
+    ns04 = { "ns02" }, ns05 = { "ns02" }, ns06 = { "ns03" },
+    ns07 = { "ns04" }, ns08 = { "ns05" },
+    ns09 = { "ns06" }, ns10 = { "ns09" },
+    ns11 = { "ns08" }, ns12 = { "ns07" },
+    ns13 = { "ns11" }, ns14 = { "ns10" },
+    ns15 = { "ns12", "ns13", "ns14" },
+}
+
+local function prereqsMet(mi)
+    local def = MISSIONS[mi]
+    if not def then return false end
+    local reqs = UNLOCK[def.id]
+    if not reqs then return true end
+    for _, r in ipairs(reqs) do
+        if not Stats["done_" .. r] then return false end
+    end
+    return true
+end
+
+local function isUnlocked(mi)
+    if not CONFIG.campaign or freePlay then return true end
+    return prereqsMet(mi)
+end
+
+local function doneCount()
+    local n = 0
+    for _, def in ipairs(MISSIONS) do
+        if Stats["done_" .. def.id] then n = n + 1 end
+    end
+    return n
+end
+
+local CODA_ENDING_NAME = {
+    a = { fr = "Rendre le fragment au réseau", en = "Return the fragment to the grid" },
+    b = { fr = "Vendre le fragment à Regina", en = "Sell the fragment to Regina" },
+    secret = { fr = "La Communion", en = "The Communion" },
+}
+
+-- Bilan de campagne généré à l'exécution, annexé à l'épilogue du final.
+-- Renvoie des chaînes déjà résolues dans la langue courante.
+local function generateRecapLines()
+    local sig, edd = alignmentCount("signal"), alignmentCount("eddies")
+    local done = doneCount()
+    if Run.def and not Stats["done_" .. Run.def.id] then done = done + 1 end
+    local flavor
+    if sig > edd then flavor = L.recap_signal
+    elseif edd > sig then flavor = L.recap_market
+    else flavor = L.recap_balanced end
+    local out = {
+        { at = 0,  text = L.recap_header },
+        { at = 4,  text = L.recap_done:format(done, #MISSIONS) },
+        { at = 8,  text = L.recap_align:format(sig, edd) },
+        { at = 12, text = flavor },
+    }
+    local coda = Stats["choice_ns15"]
+    if coda and CODA_ENDING_NAME[coda] then
+        out[#out + 1] = { at = 16, text = L.recap_coda:format(T(CODA_ENDING_NAME[coda])) }
+    end
+    return out
+end
+
+--------------------------------------------------------------------------
 -- Cycle de vie mission
 --------------------------------------------------------------------------
 
@@ -1016,7 +1117,19 @@ local function startEpilogue(lines, rewards)
     restoreWorld()
     Run.status = "epilogue"
     Run.timer, Run.step = 0, 0
-    Run.epLines = lines or {}
+    -- copie défensive (on ne mute jamais les lignes d'une définition) puis,
+    -- pour le final, on annexe le bilan de campagne après l'épilogue
+    local seq = {}
+    for _, l in ipairs(lines or {}) do seq[#seq + 1] = l end
+    if Run.def and Run.def.recap then
+        local base = 0
+        for _, l in ipairs(seq) do if l.at > base then base = l.at end end
+        base = base + 4
+        for _, r in ipairs(generateRecapLines()) do
+            seq[#seq + 1] = { at = base + r.at, text = r.text }
+        end
+    end
+    Run.epLines = seq
     Run.epEndAt = linesEndAt(Run.epLines, 4)
     rewards = rewards or {}
     if rewards.money and rewards.money > 0 then Game.AddToInventory("Items.money", rewards.money) end
@@ -1457,6 +1570,11 @@ local function startMission(what)
         screenMessage(L.unknown_mission)
         return false
     end
+    if not isUnlocked(mi) then
+        screenMessage(L.locked)
+        playSound("ui_hacking_access_denied")
+        return false
+    end
     resetRun()
     restoreWorld()
     Run.status = "running"
@@ -1673,5 +1791,34 @@ return {
             out[def.id] = Stats["choice_" .. def.id]
         end
         return out
+    end,
+    -- Campagne : sélection libre (bypass du déverrouillage) et journal
+    SetFreePlay = function(v) freePlay = v and true or false end,
+    IsUnlocked = function(what)
+        local mi = findMission(what)
+        return mi ~= nil and isUnlocked(mi)
+    end,
+    GetJournal = function()
+        local out = {}
+        for i, def in ipairs(MISSIONS) do
+            local status = Stats["done_" .. def.id] and "done"
+                or (isUnlocked(i) and "open" or "locked")
+            out[i] = { index = i, id = def.id, title = T(def.title),
+                       status = status, choice = Stats["choice_" .. def.id],
+                       best = Stats["best_" .. def.id] }
+        end
+        return out
+    end,
+    Journal = function()
+        print(L.journal_header)
+        for i, def in ipairs(MISSIONS) do
+            local tag = Stats["done_" .. def.id] and L.st_done
+                or (isUnlocked(i) and L.st_open or L.st_locked)
+            local choice = Stats["choice_" .. def.id]
+            print(("  %2d. [%-9s] %-26s %s"):format(
+                i, tag, T(def.title), choice and ("→ " .. choice) or ""))
+        end
+        print(("  Alignement : Signal %d · Marché %d")
+            :format(alignmentCount("signal"), alignmentCount("eddies")))
     end,
 }
