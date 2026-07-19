@@ -54,6 +54,14 @@ Par défaut (`CONFIG.campaign = true`), les 15 missions **se déverrouillent au 
 - **Journal** : `NS.Journal()` (ou `NS.GetJournal()`) — statut de chaque contrat (terminé / dispo / verrouillé), choix effectué, meilleur temps, et ton alignement courant.
 - **Bilan de campagne** : à la fin de **CODA**, un débriefing généré à l'exécution récapitule ton parcours — contrats bouclés, tally Signal/Marché, une conclusion qui varie selon ta voie dominante, et ton dernier mot. Le vrai point final de la campagne.
 
+## Performances
+
+Le mod est pensé pour un **coût FPS minimal, sans rien retirer au contenu ni à la qualité** :
+- **Logique throttlée** (`CONFIG.pollInterval`, ~12 Hz) : les tests de distance, scans d'ennemis et calculs d'objectif ne tournent pas à chaque frame mais ~12 fois par seconde, avec le delta cumulé — invisible en jeu, ~5× moins de travail CPU par seconde.
+- **HUD sans coût de rendu** : l'objectif, la distance et les compteurs sont **pré-calculés** pendant le tick de logique ; le rendu par frame ne fait que des appels ImGui, aucune requête au jeu.
+- **Hors mission, le mod coûte ~0** : `onUpdate` et `onDraw` se court-circuitent en une comparaison.
+- Position joueur et résolution d'écran mises en cache par tick. Aucune vague, aucun effet, aucun élément de HUD n'a été réduit — c'est purement de la plomberie.
+
 ## Le moteur
 
 Un moteur générique à **9 types de phases** — `dialogue`, `goto`, `wave`, `hold` (zone à tenir avec harceleurs), `boss`, `defend` (vagues chronométrées), `collect` (multi-points), `race` (checkpoints + limite de temps, échec possible), `choice` (A/B par hotkey, secours à la marche, fin secrète par attente) — plus un **système de conséquences déclaratif** : conditions `when` sur les phases, épilogues à variantes, renforts et assistances conditionnels, choix verrouillables. Toutes les protections héritées de SURTENSION :
@@ -70,4 +78,4 @@ Un moteur générique à **9 types de phases** — `dialogue`, `goto`, `wave`, `
 
 ## Tests
 
-`python3 test/run.py` (requiert `pip install lupa`) — **37 scénarios** : les 15 missions en autoplay complet, les choix A/B/marche/fin secrète, **les conséquences croisées entre missions** (reconnaissance du Courtier, révélation de la secte, allègement/durcissement des vagues, assistance de VOLT, fin secrète déblocable/verrouillée, bonus de fidélité), **la campagne** (déverrouillage progressif, journal, bilan final des deux voies), l'échec de course, l'abandon en pleine défense, la perte de session en plein boss, les négatifs (double démarrage, choix hors phase, auto-validation des fins) et la persistance des stats + choix.
+`python3 test/run.py` (requiert `pip install lupa`) — **40 scénarios** (dont 3 d'optimisation : HUD peint depuis le cache avec pile ImGui équilibrée, panne de rendu isolée, logique throttlée qui préserve la complétion malgré des deltas de 60 fps) : les 15 missions en autoplay complet, les choix A/B/marche/fin secrète, **les conséquences croisées entre missions** (reconnaissance du Courtier, révélation de la secte, allègement/durcissement des vagues, assistance de VOLT, fin secrète déblocable/verrouillée, bonus de fidélité), **la campagne** (déverrouillage progressif, journal, bilan final des deux voies), l'échec de course, l'abandon en pleine défense, la perte de session en plein boss, les négatifs (double démarrage, choix hors phase, auto-validation des fins) et la persistance des stats + choix.

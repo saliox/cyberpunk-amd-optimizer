@@ -33,6 +33,10 @@ local CONFIG = {
     language = "auto",   -- "auto" (langue du jeu), "fr" ou "en"
     hud      = true,     -- widget d'objectif persistant à l'écran
     barkInterval = 14.0, -- secondes entre deux répliques radio en combat
+    pollInterval = 0.08, -- cadence de la logique de mission (~12 Hz). La
+                         -- logique ne tourne pas à chaque frame : invisible
+                         -- en jeu, ~5× moins de coût CPU. N'affecte ni le
+                         -- contenu, ni le rendu, ni la qualité.
 
     -- Ennemis (records TweakDB, hostiles par défaut)
     wave1 = {
@@ -286,6 +290,8 @@ local Mission = {
     testRun = false,       -- run lancée via Jump() : pas de stats ni de record
     completionNote = nil,  -- chrono/record à afficher avec le message de fin
     hudDisabled = false,   -- HUD coupé après une erreur ImGui (log unique)
+    pollAccum = 0,         -- accumulateur de delta entre deux ticks de logique
+    hud = nil,             -- payload HUD pré-calculé (rendu sans requête jeu)
     enemies = {},          -- { id = <entityID>, seen = <bool>, age = <sec>, gone = <bool> }
     mappins = {},
 }
@@ -350,8 +356,16 @@ local function playerPos()
     return player:GetWorldPosition()
 end
 
+-- Position joueur figée pour la durée d'un tick de logique : une seule
+-- requête native par tick, réutilisée par tous les tests de distance.
+local ppos = nil
+local function refreshPlayerPos()
+    ppos = playerPos()
+    return ppos
+end
+
 local function distanceTo(p)
-    local pos = playerPos()
+    local pos = ppos
     if not pos then return 999999 end
     local dx, dy, dz = pos.x - p.x, pos.y - p.y, pos.z - p.z
     return math.sqrt(dx * dx + dy * dy + dz * dz)
@@ -596,6 +610,8 @@ local function resetMission()
     Mission.aliveCount = 0
     Mission.testRun = false
     Mission.completionNote = nil
+    Mission.pollAccum = 0
+    Mission.hud = nil
 end
 
 -- Annulation propre : restaure le monde, y compris l'heure si on l'a forcée.
@@ -953,39 +969,54 @@ local function hudObjective()
     return nil, nil
 end
 
--- Tout ce qui peut échouer (formats, distances, GetPlayer) est calculé ICI,
--- avant le moindre Push/Begin ImGui : entre Push et Pop il ne reste que des
--- appels ImGui, pour qu'une erreur ne laisse jamais la pile déséquilibrée.
-local function drawHud()
-    if not CONFIG.hud or HUD_HIDDEN[Mission.phase] then return end
-    -- pas de HUD par-dessus l'écran de mort / chargement / menu principal
-    if Mission.playerMissing or not Game.GetPlayer() then return end
-    local objective, detail = hudObjective()
-    if not objective then return end
+-- Le calcul (objectif, distance, barre) se fait pendant le tick de logique
+-- throttlé — refreshHud() — et stocke un payload prêt à peindre. Le rendu
+-- par frame — renderHud() — ne fait QUE des appels ImGui, aucune requête au
+-- jeu : le HUD ne coûte donc quasiment rien par frame.
+local screenWCache = nil
 
-    local barFrac, barText = nil, nil
+local function refreshHud()
+    if not CONFIG.hud or HUD_HIDDEN[Mission.phase] then
+        Mission.hud = nil
+        return
+    end
+    local objective, detail = hudObjective()
+    if not objective then
+        Mission.hud = nil
+        return
+    end
+    local barFrac, barText
     if Mission.phase == "hack" and Mission.hackNear then
         barFrac = math.min(1.0, Mission.hackProgress / CONFIG.hackDuration)
         barText = string.format("%d%%", math.floor(barFrac * 100))
     end
-    local screenW = 1920
-    pcall(function() screenW = ({ GetDisplayResolution() })[1] or screenW end)
+    Mission.hud = { objective = objective, detail = detail,
+                    barFrac = barFrac, barText = barText }
+end
+
+local function renderHud()
+    local h = Mission.hud
+    if not screenWCache then
+        local w = 1920
+        pcall(function() w = ({ GetDisplayResolution() })[1] or w end)
+        screenWCache = w
+    end
     local flags = ImGuiWindowFlags.NoTitleBar + ImGuiWindowFlags.AlwaysAutoResize
         + ImGuiWindowFlags.NoFocusOnAppearing + ImGuiWindowFlags.NoNav
 
-    ImGui.SetNextWindowPos(screenW - 340, 120, ImGuiCond.FirstUseEver)
+    ImGui.SetNextWindowPos(screenWCache - 340, 120, ImGuiCond.FirstUseEver)
     ImGui.PushStyleColor(ImGuiCol.WindowBg, 0.02, 0.02, 0.04, 0.65)
     ImGui.PushStyleColor(ImGuiCol.Border, 0.99, 0.93, 0.04, 0.55)
     ImGui.PushStyleColor(ImGuiCol.PlotHistogram, 0.30, 0.91, 0.96, 0.9)
     if ImGui.Begin("SURTENSION_HUD", flags) then
         ImGui.TextColored(0.99, 0.93, 0.04, 1.0, "◤ SURTENSION")
         ImGui.Separator()
-        ImGui.Text(objective)
-        if barFrac then
-            ImGui.ProgressBar(barFrac, 260, 16, barText)
+        ImGui.Text(h.objective)
+        if h.barFrac then
+            ImGui.ProgressBar(h.barFrac, 260, 16, h.barText)
         end
-        if detail then
-            ImGui.TextColored(0.30, 0.91, 0.96, 1.0, detail)
+        if h.detail then
+            ImGui.TextColored(0.30, 0.91, 0.96, 1.0, h.detail)
         end
     end
     ImGui.End()
@@ -1016,9 +1047,13 @@ registerForEvent("onShutdown", function()
     end
 end)
 
+-- Rendu par frame : ne peint que le payload pré-calculé (aucune requête au
+-- jeu hormis un garde léger « joueur présent » pour ne rien dessiner sur
+-- l'écran de mort/chargement). Court-circuité gratuitement hors mission.
 registerForEvent("onDraw", function()
-    if Mission.hudDisabled then return end
-    local ok, err = pcall(drawHud)
+    if Mission.hudDisabled or not Mission.hud then return end
+    if not Game.GetPlayer() then return end
+    local ok, err = pcall(renderHud)
     if not ok then
         -- Un pcall silencieux qui tourne chaque frame empilerait des styles
         -- ImGui non dépilés (corruption de l'overlay). On rééquilibre au
@@ -1030,8 +1065,15 @@ registerForEvent("onDraw", function()
     end
 end)
 
+-- Logique de mission throttlée : chaque frame n'accumule que le delta ; le
+-- corps (tests de distance, scans d'ennemis, HUD) ne tourne qu'à ~12 Hz,
+-- avec le delta cumulé — invisible en jeu, ~5× moins de travail par seconde.
 registerForEvent("onUpdate", function(delta)
     if Mission.phase == "idle" or Mission.phase == "done" then return end
+    Mission.pollAccum = Mission.pollAccum + delta
+    if Mission.pollAccum < CONFIG.pollInterval then return end
+    local dt = Mission.pollAccum
+    Mission.pollAccum = 0
 
     -- Détection de mort / chargement : le joueur disparaît puis revient.
     -- Les entités dynamiques ne survivent pas au chargement alors que cet
@@ -1039,6 +1081,7 @@ registerForEvent("onUpdate", function(delta)
     -- proprement et le joueur peut la relancer.
     if not Game.GetPlayer() then
         Mission.playerMissing = true
+        Mission.hud = nil
         return
     end
     if Mission.playerMissing then
@@ -1046,15 +1089,17 @@ registerForEvent("onUpdate", function(delta)
         return
     end
 
-    if     Mission.phase == "intro"    then updateIntro(delta)
+    refreshPlayerPos()   -- une seule requête de position pour tout le tick
+    if     Mission.phase == "intro"    then updateIntro(dt)
     elseif Mission.phase == "travel"   then updateTravel()
-    elseif Mission.phase == "wave1"    then updateWave1(delta)
-    elseif Mission.phase == "hack"     then updateHack(delta)
-    elseif Mission.phase == "twist"    then updateTwist(delta)
-    elseif Mission.phase == "boss"     then updateBoss(delta)
-    elseif Mission.phase == "finale"   then updateFinale(delta)
-    elseif Mission.phase == "epilogue" then updateEpilogue(delta)
+    elseif Mission.phase == "wave1"    then updateWave1(dt)
+    elseif Mission.phase == "hack"     then updateHack(dt)
+    elseif Mission.phase == "twist"    then updateTwist(dt)
+    elseif Mission.phase == "boss"     then updateBoss(dt)
+    elseif Mission.phase == "finale"   then updateFinale(dt)
+    elseif Mission.phase == "epilogue" then updateEpilogue(dt)
     end
+    refreshHud()          -- prépare le payload du HUD pour les frames à venir
 end)
 
 registerHotkey("surtension_start", "SURTENSION — démarrer la mission / start mission", startMission)

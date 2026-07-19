@@ -28,6 +28,11 @@ local CONFIG = {
     hud = true,
     campaign = true,    -- true : les missions se déverrouillent au fil de
                         -- la progression ; false : sélection libre des 15
+    pollInterval = 0.08,-- cadence de la logique de mission (~12 Hz). La
+                        -- logique ne tourne pas à chaque frame : les tests
+                        -- de distance/ennemis à 12 Hz sont invisibles en jeu
+                        -- mais divisent par ~5 le coût CPU du mod. N'affecte
+                        -- ni le contenu, ni le rendu, ni la qualité.
     reachDistance = 15.0,
     spawnRadius   = 11.0,
     spawnTimeout  = 20.0,   -- spawn jamais matérialisé => ignoré
@@ -684,6 +689,8 @@ local Run = {
     enemies = {}, mappins = {},
     hudDisabled = false,
     aliveCount = 0,
+    pollAccum = 0,     -- accumulateur de delta entre deux ticks de logique
+    hud = nil,         -- payload HUD pré-calculé (rendu sans requête jeu)
 }
 
 local Stats = {}   -- clés plates : plays_<id>, done_<id>, best_<id>
@@ -700,8 +707,17 @@ local function playerPos()
     return player:GetWorldPosition()
 end
 
+-- Position joueur figée pour la durée d'un tick de logique : une seule
+-- requête native par tick, réutilisée par tous les tests de distance de ce
+-- tick (au lieu d'un Game.GetPlayer() par appel).
+local ppos = nil
+local function refreshPlayerPos()
+    ppos = playerPos()
+    return ppos
+end
+
 local function distanceTo(p)
-    local pos = playerPos()
+    local pos = ppos
     if not pos then return 999999 end
     local dx, dy, dz = pos.x - p.x, pos.y - p.y, pos.z - p.z
     return math.sqrt(dx * dx + dy * dy + dz * dz)
@@ -1091,6 +1107,8 @@ local function resetRun()
     Run.savedTime, Run.clockChanged = nil, false
     Run.playerMissing = false
     Run.epLines, Run.epEndAt, Run.completionNote = nil, 0, nil
+    Run.pollAccum = 0
+    Run.hud = nil
 end
 
 local function cancelRun(message, restoreClock)
@@ -1609,17 +1627,22 @@ end
 
 --------------------------------------------------------------------------
 -- HUD (mêmes garanties d'équilibre ImGui que SURTENSION)
+-- Le calcul (objectif, distance, compteurs) se fait pendant le tick de
+-- logique throttlé — refreshHud() — et stocke un payload prêt à peindre.
+-- Le rendu par frame — renderHud() — ne fait QUE des appels ImGui, aucune
+-- requête au jeu : le HUD ne coûte donc quasiment rien par frame.
 --------------------------------------------------------------------------
 
-local function drawHud()
-    if not CONFIG.hud then return end
-    if Run.status ~= "running" and Run.status ~= "epilogue" then return end
-    if Run.playerMissing or not Game.GetPlayer() then return end
-    if not Run.phase and Run.status ~= "epilogue" then return end
+local screenWCache = nil
 
-    local title = T(Run.def.title)
-    local objective, detail
-    local barFrac, barText = nil, nil
+local function refreshHud()
+    if not CONFIG.hud
+        or (Run.status ~= "running" and Run.status ~= "epilogue")
+        or (not Run.phase and Run.status ~= "epilogue") then
+        Run.hud = nil
+        return
+    end
+    local objective, detail, barFrac, barText
     if Run.status == "epilogue" then
         objective = "…"
     else
@@ -1630,22 +1653,30 @@ local function drawHud()
             barText = string.format("%d%%", math.floor(barFrac * 100))
         end
     end
+    Run.hud = { title = T(Run.def.title), objective = objective or "",
+                detail = detail, barFrac = barFrac, barText = barText }
+end
 
-    local screenW = 1920
-    pcall(function() screenW = ({ GetDisplayResolution() })[1] or screenW end)
+local function renderHud()
+    local h = Run.hud
+    if not screenWCache then
+        local w = 1920
+        pcall(function() w = ({ GetDisplayResolution() })[1] or w end)
+        screenWCache = w
+    end
     local flags = ImGuiWindowFlags.NoTitleBar + ImGuiWindowFlags.AlwaysAutoResize
         + ImGuiWindowFlags.NoFocusOnAppearing + ImGuiWindowFlags.NoNav
 
-    ImGui.SetNextWindowPos(screenW - 360, 120, ImGuiCond.FirstUseEver)
+    ImGui.SetNextWindowPos(screenWCache - 360, 120, ImGuiCond.FirstUseEver)
     ImGui.PushStyleColor(ImGuiCol.WindowBg, 0.02, 0.02, 0.04, 0.65)
     ImGui.PushStyleColor(ImGuiCol.Border, 0.99, 0.93, 0.04, 0.55)
     ImGui.PushStyleColor(ImGuiCol.PlotHistogram, 0.30, 0.91, 0.96, 0.9)
     if ImGui.Begin("NIGHT_SHIFT_HUD", flags) then
-        ImGui.TextColored(0.99, 0.93, 0.04, 1.0, "◤ NIGHT SHIFT — " .. title)
+        ImGui.TextColored(0.99, 0.93, 0.04, 1.0, "◤ NIGHT SHIFT — " .. h.title)
         ImGui.Separator()
-        ImGui.Text(objective or "")
-        if barFrac then ImGui.ProgressBar(barFrac, 280, 16, barText) end
-        if detail then ImGui.TextColored(0.30, 0.91, 0.96, 1.0, detail) end
+        ImGui.Text(h.objective)
+        if h.barFrac then ImGui.ProgressBar(h.barFrac, 280, 16, h.barText) end
+        if h.detail then ImGui.TextColored(0.30, 0.91, 0.96, 1.0, h.detail) end
     end
     ImGui.End()
     ImGui.PopStyleColor(3)
@@ -1671,9 +1702,13 @@ registerForEvent("onShutdown", function()
     end
 end)
 
+-- Rendu par frame : ne peint que le payload pré-calculé (aucune requête au
+-- jeu hormis un garde léger « joueur présent » pour ne rien dessiner sur
+-- l'écran de mort/chargement). Court-circuité gratuitement hors mission.
 registerForEvent("onDraw", function()
-    if Run.hudDisabled then return end
-    local ok, err = pcall(drawHud)
+    if Run.hudDisabled or not Run.hud then return end
+    if not Game.GetPlayer() then return end
+    local ok, err = pcall(renderHud)
     if not ok then
         Run.hudDisabled = true
         pcall(function() ImGui.End() end)
@@ -1682,11 +1717,19 @@ registerForEvent("onDraw", function()
     end
 end)
 
+-- Logique de mission throttlée : chaque frame n'accumule que le delta ; le
+-- corps (tests de distance, scans d'ennemis, HUD) ne tourne qu'à ~12 Hz,
+-- avec le delta cumulé — invisible en jeu, ~5× moins de travail par seconde.
 registerForEvent("onUpdate", function(delta)
     if Run.status == "idle" or Run.status == "done" then return end
+    Run.pollAccum = Run.pollAccum + delta
+    if Run.pollAccum < CONFIG.pollInterval then return end
+    local dt = Run.pollAccum
+    Run.pollAccum = 0
 
     if not Game.GetPlayer() then
         Run.playerMissing = true
+        Run.hud = nil
         return
     end
     if Run.playerMissing then
@@ -1694,11 +1737,13 @@ registerForEvent("onUpdate", function(delta)
         return
     end
 
+    refreshPlayerPos()   -- une seule requête de position pour tout le tick
     if Run.status == "epilogue" then
-        updateEpilogue(delta)
+        updateEpilogue(dt)
     elseif Run.status == "running" and Run.phase then
-        PHASE[Run.phase.type].update(Run.phase, delta)
+        PHASE[Run.phase.type].update(Run.phase, dt)
     end
+    refreshHud()          -- prépare le payload du HUD pour les frames à venir
 end)
 
 registerHotkey("ns_next", "NIGHT SHIFT — mission suivante / next mission", function()

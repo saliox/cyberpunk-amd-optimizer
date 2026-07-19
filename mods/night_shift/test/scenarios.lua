@@ -215,6 +215,73 @@ table.insert(SCENARIOS, { name = "conséquence : alignement Marché → CODA dur
         "les renforts conditionnels de CODA sont absents")
 end })
 
+-- Optimisation : HUD depuis le cache, sans requête jeu au rendu -----------
+
+table.insert(SCENARIOS, { name = "optim : le HUD se peint depuis le cache, pile ImGui équilibrée", fn = function()
+    NS = loadMod()
+    NS.SetFreePlay(true)
+    NS.Start(1)
+    teleport({ x = -1180, y = 1640, z = 28 })   -- vers l'objectif de ns01
+    tickFor(2, 0.1)   -- quelques ticks de logique remplissent le cache HUD
+
+    -- le rendu ne fait que des appels ImGui : plusieurs frames de dessin
+    -- sans nouveau tick de logique doivent rester équilibrées
+    local pushes = SIM.imgui.push
+    draw(); draw(); draw()
+    expect(SIM.imgui.push > pushes, "le HUD aurait dû se dessiner depuis le cache")
+    expect(SIM.imgui.push == SIM.imgui.pop, "pile de styles ImGui déséquilibrée")
+    expect(SIM.imgui.beginN == SIM.imgui.endN, "Begin/End ImGui déséquilibrés")
+
+    -- pas de HUD par-dessus l'écran de mort : sans joueur, aucun dessin
+    SIM.player.present = false
+    local p2 = SIM.imgui.push
+    draw()
+    expect(SIM.imgui.push == p2, "le HUD ne doit pas se dessiner sans joueur")
+    SIM.player.present = true
+    NS.Abort()
+end })
+
+table.insert(SCENARIOS, { name = "optim : erreur ImGui en rendu → HUD coupé, pile rééquilibrée", fn = function()
+    NS = loadMod()
+    NS.SetFreePlay(true)
+    NS.Start(7)   -- ns07 contient une phase hold (barre de progression)
+    -- amène jusqu'à la phase hold
+    local guard = 0
+    while NS.GetStatus() == "running" and NS.GetPhaseInfo().type ~= "hold" do
+        guard = guard + 1; expect(guard < 20000, "phase hold non atteinte")
+        local info = NS.GetPhaseInfo()
+        if info.target then teleport(info.target) end
+        tick(0.2)
+    end
+    expect(NS.GetPhaseInfo().type == "hold", "on doit être en phase hold")
+    tickFor(1, 0.1)   -- progression > 0 → la barre sera peinte
+    SIM.imgui.progressThrows = true
+    draw()
+    expect(sawLog("HUD désactivé"), "la panne ImGui n'a pas été loguée")
+    expect(SIM.imgui.push == SIM.imgui.pop, "pile non rééquilibrée après la panne")
+    expect(SIM.imgui.beginN == SIM.imgui.endN, "Begin/End non rééquilibrés")
+    local p = SIM.imgui.push
+    draw()
+    expect(SIM.imgui.push == p, "le HUD doit rester coupé après une panne")
+    SIM.imgui.progressThrows = false
+    NS.Abort()
+end })
+
+table.insert(SCENARIOS, { name = "optim : la logique throttlée préserve la complétion", fn = function()
+    -- des frames très courtes (delta < pollInterval) doivent quand même,
+    -- une fois cumulées, faire avancer la mission
+    NS = loadMod()
+    NS.SetFreePlay(true)
+    NS.Start(1)
+    teleport({ x = -1180, y = 1640, z = 28 })
+    for _ = 1, 200 do tick(0.016) end   -- ~3,2 s en frames de 60 fps
+    expect(NS.GetStatus() ~= "idle", "la mission ne doit pas avoir été annulée")
+    -- on a dépassé le dialogue d'intro et atteint le combat (wave)
+    expect(NS.GetPhaseInfo().type == "wave" or NS.GetStatus() == "running",
+        "la logique throttlée doit progresser malgré des deltas minuscules")
+    NS.Abort()
+end })
+
 -- Campagne : progression, journal, bilan -----------------------------------
 
 table.insert(SCENARIOS, { name = "campagne : déverrouillage progressif des missions", fn = function()
