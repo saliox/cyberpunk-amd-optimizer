@@ -95,17 +95,113 @@ table.insert(SCENARIOS, { name = "ns09 : choix B par MARCHE (secours sans touche
     expect(sawMessage("clignotent") or sawMessage("blink"), "épilogue du choix B absent")
 end })
 
-table.insert(SCENARIOS, { name = "ns15 : FIN SECRÈTE par attente (la Communion)", fn = function()
+table.insert(SCENARIOS, { name = "ns15 : FIN SECRÈTE déblocable — méritée par 2 choix Signal", fn = function()
+    -- on gagne la confiance de VOLT : ns09 B (épargner la secte) + ns14 B (laisser chanter)
+    autoplay(9, "b")
+    autoplay(14, "b")
+    local align = NS.GetAlignment()
+    expect(align.signal == 2, "alignement Signal attendu à 2, obtenu " .. tostring(align.signal))
+    SIM.inventory = {}   -- isole les récompenses de CODA
     autoplay(15, "timeout")
-    expect(sawMessage("COMMUNION"), "fin secrète non déclenchée par l'attente")
+    expect(sawMessage("COMMUNION"), "fin secrète non déclenchée malgré l'alignement")
+    expect(sawMessage("je te couvre") or sawMessage("got you"), "intro variante Signal absente")
+    expect(sawMessage("Pas ceux-là") or sawMessage("Not these ones"), "l'assistance de VOLT au boss est absente")
     expect(SIM.inventory["Items.Preset_Yinglong_Default"] == 1, "récompense secrète absente")
     expect((SIM.inventory["Items.money"] or 0) == 0, "la fin secrète ne paie pas en eddies")
+end })
+
+table.insert(SCENARIOS, { name = "ns15 : fin secrète VERROUILLÉE sans alignement (secours marche)", fn = function()
+    NS = loadMod()
+    NS.Start(15)
+    local guard = 0
+    while NS.GetStatus() == "running" and NS.GetPhaseInfo().type ~= "choice" do
+        guard = guard + 1
+        expect(guard < 20000, "CODA bloquée avant le choix")
+        local info = NS.GetPhaseInfo()
+        if info.type == "goto" then teleport(info.target); tick(0.2)
+        elseif info.type == "boss" then tick(0.5); killAll()
+        else tick(0.5) end
+    end
+    expect(sawMessage("Débrouille-toi") or sawMessage("Handle it"), "intro variante Marché/neutre absente")
+    tickFor(50)   -- timeout 45 s dépassé
+    expect(NS.GetStatus() == "running", "sans alignement, l'attente ne doit PAS conclure la mission")
+    expect(NS.GetPhaseInfo().walk == true, "le secours par marche doit s'activer à la place")
+    expect(not sawMessage("COMMUNION"), "la fin secrète ne doit pas être accessible sans la mériter")
+    NS.Abort()
+end })
+
+table.insert(SCENARIOS, { name = "ns15 : fin A bonifiée par la fidélité (caches de VOLT)", fn = function()
+    autoplay(9, "b")
+    autoplay(14, "b")
+    SIM.inventory = {}
+    autoplay(15, "a")
+    expect(SIM.inventory["Items.money"] == 25000,
+        "fin A + Signal>=2 : 15000 + 10000 de bonus attendus, obtenu " .. tostring(SIM.inventory["Items.money"]))
+    expect(sawMessage("caches") or sawMessage("stashes"), "message du bonus de fidélité absent")
 end })
 
 table.insert(SCENARIOS, { name = "ns15 : fin A au hotkey (VOLT s'éteint en paix)", fn = function()
     autoplay(15, "a")
     expect(SIM.inventory["Items.money"] == 15000, "récompense fin A incorrecte")
     expect(sawMessage("la fin") or sawMessage("the ending"), "épilogue fin A absent")
+end })
+
+-- Conséquences croisées entre missions ------------------------------------
+
+table.insert(SCENARIOS, { name = "conséquence : ns07 B → le Courtier te reconnaît et renforce ns12", fn = function()
+    autoplay(7, "b")   -- vendre le shard au marché noir
+    local before = spawnedCount()
+    autoplay(12)
+    expect(sawMessage("déjà fait affaire") or sawMessage("done business"),
+        "le dialogue de reconnaissance du courtier est absent")
+    expect(sawMessage("prévu large") or sawMessage("planned big"), "l'annonce des renforts est absente")
+    -- embuscade renforcée : 5 de base + 2 équipes supplémentaires
+    expect(spawnedCount() - before == 7,
+        "embuscade renforcée attendue (7 spawns), obtenu " .. (spawnedCount() - before))
+end })
+
+table.insert(SCENARIOS, { name = "conséquence : ns07 A → ns12 standard (pas de reconnaissance)", fn = function()
+    autoplay(7, "a")   -- rendre le shard au NCPD
+    local before = spawnedCount()
+    autoplay(12)
+    expect(not sawMessage("déjà fait affaire") and not sawMessage("done business"),
+        "le courtier ne doit pas te reconnaître")
+    expect(spawnedCount() - before == 5,
+        "embuscade standard attendue (5 spawns), obtenu " .. (spawnedCount() - before))
+end })
+
+table.insert(SCENARIOS, { name = "conséquence : ns09 B → ns10 révèle la secte, ns14 allégée", fn = function()
+    autoplay(9, "b")   -- épargner les Enfants du Courant
+    autoplay(10)
+    expect(sawMessage("bougies LED encore tièdes") or sawMessage("candles still warm"),
+        "l'épilogue variante (la secte) est absent de ns10")
+    local before = spawnedCount()
+    autoplay(14, "b")
+    expect(sawMessage("chant monte") or sawMessage("chant rises"),
+        "la diversion des Enfants est absente de ns14")
+    expect(spawnedCount() - before == 4,
+        "garde voodoo allégée attendue (4 spawns), obtenu " .. (spawnedCount() - before))
+end })
+
+table.insert(SCENARIOS, { name = "conséquence : ns09 A → ns10 pointe le courtier, ns14 complète", fn = function()
+    autoplay(9, "a")   -- disperser la secte
+    autoplay(10)
+    expect(sawMessage("sous-traitant") or sawMessage("subcontractor"),
+        "l'épilogue par défaut (piste du courtier) est absent de ns10")
+    local before = spawnedCount()
+    autoplay(14, "a")
+    expect(spawnedCount() - before == 6,
+        "garde voodoo complète attendue (6 spawns), obtenu " .. (spawnedCount() - before))
+end })
+
+table.insert(SCENARIOS, { name = "conséquence : alignement Marché → CODA durcie (renforts Arasaka)", fn = function()
+    autoplay(7, "b")
+    autoplay(9, "a")   -- 2 choix Marché
+    local align = NS.GetAlignment()
+    expect(align.eddies == 2, "alignement Marché attendu à 2")
+    autoplay(15, "b")
+    expect(sawMessage("financé leurs renseignements") or sawMessage("funded their intel"),
+        "les renforts conditionnels de CODA sont absents")
 end })
 
 -- Échecs et interruptions -------------------------------------------------

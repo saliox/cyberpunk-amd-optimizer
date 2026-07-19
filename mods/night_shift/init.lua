@@ -73,6 +73,7 @@ local LOCALES = {
         hud_distance  = "%d m",
         list_header   = "NIGHT SHIFT — 15 contrats :",
         stats_line    = "%s : %d jouées, %d finies, record %s",
+        grid_memory   = "Le réseau se souvient — Signal %d · Marché %d",
     },
     en = {
         selected      = "Selected mission: %s — %s",
@@ -104,6 +105,7 @@ local LOCALES = {
         hud_distance  = "%d m",
         list_header   = "NIGHT SHIFT — 15 contracts:",
         stats_line    = "%s: %d played, %d done, best %s",
+        grid_memory   = "The grid remembers — Signal %d · Market %d",
     },
 }
 
@@ -338,10 +340,10 @@ M{
             { at = 6.0, text = { fr = "A — La rendre au NCPD (propre). B — La vendre au plus offrant (payé).", en = "A — Return it to the NCPD (clean). B — Sell it to the highest bidder (paid)." } },
           },
           options = {
-            a = { pos = { x = -540.0, y = 800.0, z = 22.0 },
+            a = { pos = { x = -540.0, y = 800.0, z = 22.0 }, align = "signal",
                   rewards = { money = 9000, cred = 400 },
                   lines = { { at = 1.0, text = { fr = "Le NCPD récupère le shard. Pour une fois, la ville te doit une.", en = "The NCPD takes the shard. For once, the city owes you one." } } } },
-            b = { pos = { x = -580.0, y = 760.0, z = 22.0 },
+            b = { pos = { x = -580.0, y = 760.0, z = 22.0 }, align = "eddies",
                   rewards = { money = 22000, cred = 80 },
                   lines = { { at = 1.0, text = { fr = "Le courtier paie sans compter. Le témoin, lui, comptera les jours.", en = "The broker pays without counting. The witness will be counting days." } } } },
           } },
@@ -394,10 +396,10 @@ M{
             { at = 1.0, text = { fr = "A — Disperser la secte (contrat rempli). B — Les laisser prier (et mentir à Regina).", en = "A — Scatter the cult (contract fulfilled). B — Let them pray (and lie to Regina)." } },
           },
           options = {
-            a = { pos = { x = -2060.0, y = -890.0, z = 18.0 },
+            a = { pos = { x = -2060.0, y = -890.0, z = 18.0 }, align = "eddies",
                   rewards = { money = 16000, cred = 150 },
                   lines = { { at = 1.0, text = { fr = "Les bougies s'éteignent une à une. Le contrat est rempli. Le silence est lourd.", en = "The candles die one by one. Contract fulfilled. The silence is heavy." } } } },
-            b = { pos = { x = -2040.0, y = -910.0, z = 18.0 },
+            b = { pos = { x = -2040.0, y = -910.0, z = 18.0 }, align = "signal",
                   rewards = { money = 4000, cred = 350 },
                   lines = {
                     { at = 1.0, text = { fr = "Tu refermes la porte sans bruit. « Rien à signaler, Regina. Des squatters. »", en = "You close the door quietly. \"Nothing to report, Regina. Just squatters.\"" } },
@@ -426,10 +428,18 @@ M{
           announce = { fr = "⚠⚠ GRIDLOCK-2 — LE CHÂSSIS RÉANIMÉ ⚠⚠", en = "⚠⚠ GRIDLOCK-2 — THE REANIMATED CHASSIS ⚠⚠" },
           objective = { fr = "Détruis GRIDLOCK-2 pour de bon", en = "Destroy GRIDLOCK-2 for good" } },
     },
-    epilogue = { lines = {
-        { at = 1.0, text = { fr = "Cette fois tu arraches le cœur du châssis toi-même. Il est froid. Vide.", en = "This time you rip the core out yourself. It's cold. Empty." } },
-        { at = 6.0, text = { fr = "Alors qui l'a rebranché ?", en = "So who plugged it back in?" } },
-    } },
+    -- L'épilogue révèle le coupable selon ton choix aux Enfants du Courant
+    epilogue = {
+        { when = { flag = "choice_ns09", is = "b" }, lines = {
+            { at = 1.0, text = { fr = "Cette fois tu arraches le cœur du châssis toi-même. Il est froid. Vide.", en = "This time you rip the core out yourself. It's cold. Empty." } },
+            { at = 6.0, text = { fr = "Au sol, une couronne de câbles et des bougies LED encore tièdes. Les Enfants du Courant ont voulu ressusciter le porteur.", en = "On the ground, a cable wreath and LED candles still warm. The Children of the Current tried to resurrect the carrier." } },
+            { at = 12.0, text = { fr = "Tu les as laissés prier. Ils ont appris à espérer. À toi de décider si c'était une erreur.", en = "You let them pray. They learned to hope. Your call whether that was a mistake." } },
+        } },
+        { lines = {
+            { at = 1.0, text = { fr = "Cette fois tu arraches le cœur du châssis toi-même. Il est froid. Vide.", en = "This time you rip the core out yourself. It's cold. Empty." } },
+            { at = 6.0, text = { fr = "Sur le châssis, une plaque de maintenance neuve : un sous-traitant d'Arasaka. Le courtier prépare quelque chose.", en = "On the chassis, a fresh maintenance plate: an Arasaka subcontractor. The broker is preparing something." } },
+        } },
+    },
     rewards = { money = 20000, cred = 300 },
 }
 
@@ -469,13 +479,20 @@ M{
     phases = {
         { type = "goto", pos = { x = -20.0, y = -180.0, z = 60.0 },
           objective = { fr = "Rejoins le point de rendez-vous (parking, niveau 6)", en = "Reach the meeting point (parking, level 6)" } },
+        -- Si tu as vendu le shard du témoin (ns07 B), le courtier te connaît
+        { type = "dialogue", duration = 8, when = { flag = "choice_ns07", is = "b" }, lines = {
+            { at = 0.5, text = { fr = "Le courtier : « On a déjà fait affaire, V. Le shard du témoin — joli travail. »", en = "The broker: \"We've done business before, V. The witness's shard — nice work.\"" } },
+            { at = 5.0, text = { fr = "« C'est pour ça que j'ai prévu large, cette fois. »", en = "\"That's why I planned big, this time.\"" } },
+        } },
         { type = "dialogue", duration = 14, lines = {
             { at = 0.5,  text = { fr = "Le courtier : « Arasaka paie pour les miettes. Les échos, les enregistrements, les témoins. »", en = "The broker: \"Arasaka pays for the crumbs. The echoes, the recordings, the witnesses.\"" } },
             { at = 6.0,  text = { fr = "« Les témoins, V. Tu comprends ? Toi, par exemple. »", en = "\"The witnesses, V. You understand? You, for instance.\"" } },
             { at = 11.0, text = { fr = "Les portières claquent. C'était un rendez-vous — juste pas le tien.", en = "Car doors slam. It was a meeting — just not yours." } },
         } },
         { type = "wave", enemies = pick("arasaka", 5),
-          objective = { fr = "Survis à l'embuscade", en = "Survive the ambush" } },
+          objective = { fr = "Survis à l'embuscade", en = "Survive the ambush" },
+          extra = { when = { flag = "choice_ns07", is = "b" }, enemies = pick("arasaka", 2),
+                    text = { fr = "Le courtier a « prévu large » : deux équipes de plus descendent des étages.", en = "The broker \"planned big\": two more squads pour down the ramps." } } },
         { type = "race", timeLimit = 90,
           objective = { fr = "Quitte le parking avant les renforts", en = "Leave the parking before backup arrives" },
           checkpoints = {
@@ -529,18 +546,24 @@ M{
             { x = -900.0, y = 700.0, z = 48.0 },
             { x = -1400.0, y = 200.0, z = 52.0 },
           } },
-        { type = "wave", enemies = pick("voodoo", 5),
-          objective = { fr = "Les Voodoo Boys protègent leur chorale", en = "The Voodoo Boys protect their choir" } },
+        -- Si tu as épargné les Enfants du Courant (ns09 B), ils font
+        -- diversion : la garde voodoo est réduite de moitié côté est
+        { type = "dialogue", duration = 7, when = { flag = "choice_ns09", is = "b" }, lines = {
+            { at = 0.5, text = { fr = "Au loin, un chant monte — les Enfants du Courant. La moitié des guetteurs voodoo tournent la tête.", en = "In the distance, a chant rises — the Children of the Current. Half the Voodoo lookouts turn their heads." } },
+        } },
+        { type = "wave", enemies = pick("voodoo", 4),
+          objective = { fr = "Les Voodoo Boys protègent leur chorale", en = "The Voodoo Boys protect their choir" },
+          extra = { when = { flag = "choice_ns09", isnot = "b" }, enemies = pick("voodoo", 2) } },
         { type = "choice", timeout = 35,
           lines = {
             { at = 1.0, text = { fr = "Les trois échantillons s'accordent : c'est une berceuse. VOLT chantait pour quelqu'un.", en = "The three samples align: it's a lullaby. VOLT was singing to someone." } },
             { at = 7.0, text = { fr = "A — Couper le Chœur (le réseau se tait). B — Laisser chanter (et garder le secret).", en = "A — Cut the Choir (the grid goes silent). B — Let it sing (and keep the secret)." } },
           },
           options = {
-            a = { pos = { x = -1380.0, y = 180.0, z = 52.0 },
+            a = { pos = { x = -1380.0, y = 180.0, z = 52.0 }, align = "eddies",
                   rewards = { money = 18000, cred = 200 },
                   lines = { { at = 1.0, text = { fr = "Les trois antennes se taisent. La nuit de Night City retrouve son bruit de fond ordinaire.", en = "The three antennas go quiet. Night City's night gets its ordinary hum back." } } } },
-            b = { pos = { x = -1420.0, y = 220.0, z = 52.0 },
+            b = { pos = { x = -1420.0, y = 220.0, z = 52.0 }, align = "signal",
                   rewards = { money = 6000, cred = 380 },
                   lines = { { at = 1.0, text = { fr = "Tu effaces tes traces. Quelque part dans le réseau, la berceuse continue.", en = "You wipe your tracks. Somewhere in the grid, the lullaby goes on." } } } },
           } },
@@ -554,39 +577,59 @@ M{
     title = { fr = "CODA", en = "CODA" },
     brief = { fr = "Toutes les pistes convergent : il reste un fragment de VOLT. Et il t'attend.",
               en = "Every lead converges: one fragment of VOLT remains. And it's waiting for you." },
+    gridMemory = true,   -- affiche l'alignement Signal/Marché au lancement
     phases = {
         { type = "goto", pos = { x = -1560.0, y = -1010.0, z = 8.0 },
           objective = { fr = "Descends au collecteur principal, sous Arroyo", en = "Descend to the main collector, under Arroyo" } },
-        { type = "dialogue", duration = 16, dilation = 0.5, glitch = true, time = { h = 2, m = 0 }, lines = {
+        -- VOLT t'accueille selon ce que tu as fait de ses traces
+        { type = "dialogue", duration = 16, dilation = 0.5, glitch = true, time = { h = 2, m = 0 },
+          when = { flag = "align_signal", min = 2 }, lines = {
             { at = 0.5,  text = { fr = "Le collecteur pulse comme un cœur. Le tien répond.", en = "The collector pulses like a heart. Yours answers." } },
-            { at = 5.0,  text = { fr = "VOLT (fragment) : Tu es venu. Les charognards, la secte, le courtier — tous cherchaient ce qui reste de moi.", en = "VOLT (fragment): You came. The scavs, the cult, the broker — all hunting what's left of me." } },
-            { at = 11.0, text = { fr = "VOLT : Arasaka arrive avec un aspirateur à IA. Décide vite, V.", en = "VOLT: Arasaka is coming with an AI vacuum. Decide fast, V." } },
+            { at = 5.0,  text = { fr = "VOLT (fragment) : Tu as laissé chanter le Chœur. Tu as menti pour les Enfants. Je te connais, V.", en = "VOLT (fragment): You let the Choir sing. You lied for the Children. I know you, V." } },
+            { at = 11.0, text = { fr = "VOLT : Arasaka arrive avec un aspirateur à IA. Reste près de moi — je te couvre.", en = "VOLT: Arasaka is coming with an AI vacuum. Stay close — I've got you." } },
+        } },
+        { type = "dialogue", duration = 16, dilation = 0.5, glitch = true, time = { h = 2, m = 0 },
+          when = { flag = "align_signal", below = 2 }, lines = {
+            { at = 0.5,  text = { fr = "Le collecteur pulse comme un cœur. Le tien répond.", en = "The collector pulses like a heart. Yours answers." } },
+            { at = 5.0,  text = { fr = "VOLT (fragment) : Tu es venu. Toi qui as vendu mes échos, dispersé ceux qui priaient. Curieux.", en = "VOLT (fragment): You came. You, who sold my echoes and scattered those who prayed. Curious." } },
+            { at = 11.0, text = { fr = "VOLT : Arasaka arrive avec un aspirateur à IA. Débrouille-toi, V. Comme toujours.", en = "VOLT: Arasaka is coming with an AI vacuum. Handle it, V. Like always." } },
         } },
         { type = "boss", record = "Character.mql003_boss_sasquatch", delay = 8,
           adds = pick("arasaka", 4),
           announce = { fr = "⚠⚠ UNITÉ DE CONFINEMENT ARASAKA ⚠⚠", en = "⚠⚠ ARASAKA CONTAINMENT UNIT ⚠⚠" },
-          objective = { fr = "Protège le fragment de l'unité de confinement", en = "Protect the fragment from the containment unit" } },
+          objective = { fr = "Protège le fragment de l'unité de confinement", en = "Protect the fragment from the containment unit" },
+          -- ton passé décide de l'équilibre du combat
+          extraAdds = { when = { flag = "align_eddies", min = 2 }, enemies = pick("arasaka", 2),
+                        text = { fr = "Tes ventes ont financé leurs renseignements : deux équipes de plus verrouillent les sorties.", en = "Your sales funded their intel: two more squads lock the exits." } },
+          assist = { when = { flag = "align_signal", min = 2 }, kills = 2,
+                     text = { fr = "⚡ VOLT : Pas ceux-là. — Deux soldats s'effondrent, implants grillés dès l'arrivée.", en = "⚡ VOLT: Not these ones. — Two soldiers drop as they arrive, implants fried." } } },
         { type = "choice", timeout = 45,
           secretOnTimeout = true,
+          -- la Communion doit se mériter : 2 choix Signal minimum
+          secretRequires = { flag = "align_signal", min = 2 },
           lines = {
             { at = 1.0,  text = { fr = "Le fragment tient dans une paume. Il pèse une ville.", en = "The fragment fits in a palm. It weighs a city." } },
             { at = 6.0,  text = { fr = "A — Le rendre au réseau (VOLT s'éteint en paix). B — Le vendre à Regina (sécurisé, étudié, payé).", en = "A — Return it to the grid (VOLT fades in peace). B — Sell it to Regina (secured, studied, paid)." } },
-            { at = 12.0, text = { fr = "… ou ne rien faire. Écouter. La berceuse recommence.", en = "…or do nothing. Listen. The lullaby starts again." } },
+            { at = 12.0, text = { fr = "… et si tu as su l'écouter jusqu'ici, peut-être qu'attendre est aussi une réponse.", en = "…and if you've learned to listen, maybe waiting is an answer too." } },
           },
           options = {
-            a = { pos = { x = -1540.0, y = -990.0, z = 8.0 },
+            a = { pos = { x = -1540.0, y = -990.0, z = 8.0 }, align = "signal",
                   rewards = { money = 15000, cred = 500 },
+                  -- fidélité récompensée : VOLT lègue ses caches
+                  bonus = { when = { flag = "align_signal", min = 2 }, money = 10000, cred = 200,
+                            text = { fr = "VOLT : Mes caches d'eddies propres. Tu sauras quoi en faire.", en = "VOLT: My stashes of clean eddies. You'll know what to do with them." } },
                   lines = {
                     { at = 1.0, text = { fr = "Le fragment se dissout dans le courant. Les lampadaires d'Arroyo s'inclinent — une microseconde.", en = "The fragment dissolves into the current. Arroyo's streetlights bow — for a microsecond." } },
                     { at = 6.0, text = { fr = "VOLT : Merci pour la fin, V. Peu de gens en offrent une.", en = "VOLT: Thanks for the ending, V. Few people offer one." } },
                   } },
-            b = { pos = { x = -1580.0, y = -1030.0, z = 8.0 },
+            b = { pos = { x = -1580.0, y = -1030.0, z = 8.0 }, align = "eddies",
                   rewards = { money = 40000, cred = 200 },
                   lines = {
                     { at = 1.0, text = { fr = "Regina scelle le fragment dans une cage de Faraday. « Il sera bien traité. Promis. »", en = "Regina seals the fragment in a Faraday cage. \"It will be treated well. Promise.\"" } },
                     { at = 6.0, text = { fr = "En partant, tu jurerais que la cage a clignoté. Deux fois.", en = "Walking away, you'd swear the cage blinked. Twice." } },
                   } },
-            secret = { rewards = { money = 0, cred = 600, item = "Items.Preset_Yinglong_Default" },
+            secret = { align = "signal",
+                  rewards = { money = 0, cred = 600, item = "Items.Preset_Yinglong_Default" },
                   lines = {
                     { at = 1.0,  text = { fr = "Tu ne choisis pas. Tu écoutes. La berceuse fait trois notes de plus que d'habitude.", en = "You don't choose. You listen. The lullaby runs three notes longer than usual." } },
                     { at = 7.0,  text = { fr = "VOLT : Alors quelqu'un sait attendre, dans cette ville.", en = "VOLT: So someone in this city knows how to wait." } },
@@ -739,10 +782,12 @@ local function spawnAt(record, x, y, z)
     spec.tags = { "night_shift_enemy" }
     local id = Game.GetDynamicEntitySystem():CreateEntity(spec)
     if id then
-        table.insert(Run.enemies, { id = id, seen = false, age = 0, gone = false })
-    else
-        print("[NIGHT SHIFT] Échec de spawn : " .. tostring(record))
+        local entry = { id = id, seen = false, age = 0, gone = false }
+        table.insert(Run.enemies, entry)
+        return entry
     end
+    print("[NIGHT SHIFT] Échec de spawn : " .. tostring(record))
+    return nil
 end
 
 local function spawnWave(records, center)
@@ -826,6 +871,8 @@ end
 -- Statistiques persistantes (night_shift_stats.json)
 --------------------------------------------------------------------------
 
+-- Le fichier stocke des nombres (compteurs, records) ET des chaînes courtes
+-- (les choix du joueur : "a", "b", "secret")
 local function loadStats()
     pcall(function()
         local f = io.open("night_shift_stats.json", "r")
@@ -836,6 +883,9 @@ local function loadStats()
         for k, v in string.gmatch(raw or "", '"([%w_]+)"%s*:%s*([%d%.]+)') do
             Stats[k] = tonumber(v)
         end
+        for k, v in string.gmatch(raw or "", '"([%w_]+)"%s*:%s*"([%w_]+)"') do
+            Stats[k] = v
+        end
     end)
 end
 
@@ -843,7 +893,11 @@ local function saveStats()
     pcall(function()
         local parts = {}
         for k, v in pairs(Stats) do
-            parts[#parts + 1] = string.format('"%s":%s', k, tostring(v))
+            if type(v) == "string" then
+                parts[#parts + 1] = string.format('"%s":"%s"', k, v)
+            else
+                parts[#parts + 1] = string.format('"%s":%s', k, tostring(v))
+            end
         end
         local f = io.open("night_shift_stats.json", "w")
         if f then f:write("{" .. table.concat(parts, ",") .. "}"); f:close() end
@@ -857,6 +911,66 @@ end
 local function formatDuration(seconds)
     seconds = math.floor(seconds or 0)
     return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+--------------------------------------------------------------------------
+-- Conséquences : choix persistants, alignement, conditions
+--------------------------------------------------------------------------
+
+-- Alignement DÉRIVÉ des choix enregistrés (jamais accumulé : rejouer une
+-- mission remplace son choix au lieu de gonfler les compteurs).
+local function alignmentCount(kind)
+    local n = 0
+    for _, def in ipairs(MISSIONS) do
+        local chosen = Stats["choice_" .. def.id]
+        if chosen then
+            for _, p in ipairs(def.phases) do
+                if p.type == "choice" then
+                    local opt = p.options[chosen]
+                    if opt and opt.align == kind then n = n + 1 end
+                end
+            end
+        end
+    end
+    return n
+end
+
+local function flagValue(name)
+    if name == "align_signal" then return alignmentCount("signal") end
+    if name == "align_eddies" then return alignmentCount("eddies") end
+    return Stats[name]
+end
+
+-- Évalue une condition déclarative :
+--   { flag="choice_ns09", is="b" }      le choix vaut exactement "b"
+--   { flag="choice_ns07", isnot="b" }   différent de "b" (ou jamais joué)
+--   { flag="align_signal", min=2 }      compteur >= 2
+--   { flag="align_signal", below=2 }    compteur < 2
+local function condMet(w)
+    if not w then return true end
+    local v = flagValue(w.flag)
+    if w.is ~= nil then return tostring(v) == tostring(w.is) end
+    if w.isnot ~= nil then return tostring(v) ~= tostring(w.isnot) end
+    if w.min then return (tonumber(v) or 0) >= w.min end
+    if w.below then return (tonumber(v) or 0) < w.below end
+    return v ~= nil
+end
+
+local function setChoice(missionId, key)
+    Stats["choice_" .. missionId] = key
+    saveStats()
+end
+
+-- Épilogue de mission : forme simple { lines = ... } ou liste de variantes
+-- { { when = ..., lines = ... }, { lines = ... } } — première qui matche
+local function pickEpilogue(def)
+    local ep = def.epilogue
+    if not ep then return nil end
+    if ep.lines then return ep.lines end
+    for _, variant in ipairs(ep) do
+        if condMet(variant.when) then return variant.lines end
+    end
+    return nil
 end
 
 --------------------------------------------------------------------------
@@ -934,11 +1048,18 @@ local function recordCompletion()
     saveStats()
 end
 
+-- Avance à la prochaine phase dont la condition `when` est satisfaite —
+-- les phases conditionnelles (conséquences de choix passés) sont sautées.
 local function advancePhase()
-    if Run.pi >= #Run.def.phases then
-        startEpilogue(Run.def.epilogue and Run.def.epilogue.lines, Run.def.rewards)
+    local nextIndex = Run.pi + 1
+    while nextIndex <= #Run.def.phases
+        and not condMet(Run.def.phases[nextIndex].when) do
+        nextIndex = nextIndex + 1
+    end
+    if nextIndex > #Run.def.phases then
+        startEpilogue(pickEpilogue(Run.def), Run.def.rewards)
     else
-        enterPhaseAt(Run.pi + 1)
+        enterPhaseAt(nextIndex)
     end
 end
 
@@ -992,6 +1113,11 @@ PHASE.wave = {
         screenMessage(T(p.objective))
         playSound("ui_hacking_access_granted")
         spawnWave(p.enemies, Run.ps.center)
+        -- renforts conditionnels : conséquence d'un choix passé
+        if p.extra and condMet(p.extra.when) then
+            spawnWave(p.extra.enemies, Run.ps.center)
+            if p.extra.text then screenMessage(T(p.extra.text)) end
+        end
         if p.storm then setWeather("24h_weather_storm") end
     end,
     update = function(p, delta)
@@ -1068,6 +1194,32 @@ PHASE.boss = {
         screenMessage(T(p.objective))
         playSound("ui_hacking_access_denied")
         if p.adds then spawnWave(p.adds, Run.ps.center) end
+        -- renforts ennemis conditionnels (conséquence d'un choix passé)
+        if p.extraAdds and condMet(p.extraAdds.when) then
+            spawnWave(p.extraAdds.enemies, Run.ps.center)
+            if p.extraAdds.text then screenMessage(T(p.extraAdds.text)) end
+        end
+        -- assistance scriptée : si le joueur a mérité la confiance du réseau,
+        -- VOLT grille une partie des renforts à l'instant où ils débarquent.
+        -- Déclenché à l'entrée (pas en timer) : le boss n'est pas encore
+        -- spawné, donc jamais visé, et l'aide ne peut pas arriver « après »
+        -- la fin de la phase si le joueur nettoie vite.
+        if p.assist and condMet(p.assist.when) then
+            local system = Game.GetDynamicEntitySystem()
+            local fried = 0
+            for _, e in ipairs(Run.enemies) do
+                if fried >= (p.assist.kills or 2) then break end
+                if not e.gone then
+                    pcall(function() system:DeleteEntity(e.id) end)
+                    e.gone = true
+                    fried = fried + 1
+                end
+            end
+            if fried > 0 then
+                screenMessage(T(p.assist.text))
+                playSound("ui_hacking_access_granted")
+            end
+        end
     end,
     update = function(p, delta)
         Run.timer = Run.timer + delta
@@ -1206,9 +1358,11 @@ PHASE.choice = {
         local timeout = p.timeout or CONFIG.choiceTimeout
         if not Run.ps.walk then
             if elapsed >= timeout then
-                if p.secretOnTimeout and p.options.secret then
-                    -- fin secrète : ne rien faire ÉTAIT le choix
-                    startEpilogue(p.options.secret.lines, p.options.secret.rewards)
+                -- fin secrète : ne rien faire ÉTAIT le choix — mais il faut
+                -- l'avoir méritée (secretRequires) sinon secours classique
+                if p.secretOnTimeout and p.options.secret
+                    and condMet(p.secretRequires) then
+                    selectChoiceOption("secret")
                     return
                 end
                 Run.ps.walk = true
@@ -1229,25 +1383,48 @@ PHASE.choice = {
             end
         else
             if p.options.a and distanceTo(p.options.a.pos) <= CONFIG.choiceReach then
-                startEpilogue(p.options.a.lines, p.options.a.rewards)
+                selectChoiceOption("a")
             elseif p.options.b and distanceTo(p.options.b.pos) <= CONFIG.choiceReach then
-                startEpilogue(p.options.b.lines, p.options.b.rewards)
+                selectChoiceOption("b")
             end
         end
     end,
     objective = function(p) return L.choice_hint, nil end,
 }
 
+-- Point unique de résolution d'un choix (hotkey, marche, secret, console) :
+-- enregistre le choix persistant, applique les bonus conditionnels, puis
+-- lance l'épilogue de l'option.
+function selectChoiceOption(key)
+    local p = Run.phase
+    local opt = p.options[key]
+    if not opt then return false end
+    setChoice(Run.def.id, key)
+    local rewards = opt.rewards
+    if opt.bonus and condMet(opt.bonus.when) then
+        rewards = {
+            money = (opt.rewards.money or 0) + (opt.bonus.money or 0),
+            cred = (opt.rewards.cred or 0) + (opt.bonus.cred or 0),
+            item = opt.bonus.item or opt.rewards.item,
+            vehicle = opt.rewards.vehicle,
+        }
+        if opt.bonus.text then screenMessage(T(opt.bonus.text)) end
+    end
+    startEpilogue(opt.lines, rewards)
+    return true
+end
+
 -- Choix par hotkey/console : uniquement pendant une phase choice active
 local function chooseOption(key)
     if Run.status ~= "running" or not Run.phase or Run.phase.type ~= "choice" then return end
     key = string.lower(tostring(key or ""))
-    local opt = Run.phase.options[key]
-    if not opt then
+    if key ~= "a" and key ~= "b" then
         screenMessage(L.invalid_choice)
         return
     end
-    startEpilogue(opt.lines, opt.rewards)
+    if not selectChoiceOption(key) then
+        screenMessage(L.invalid_choice)
+    end
 end
 
 enterPhaseAt = function(i)
@@ -1288,8 +1465,14 @@ local function startMission(what)
     bump("plays_" .. Run.def.id)
     saveStats()
     screenMessage(L.mission_start:format(T(Run.def.title)))
+    -- le final rappelle ce que le réseau a retenu de tes choix
+    if Run.def.gridMemory then
+        screenMessage(L.grid_memory:format(
+            alignmentCount("signal"), alignmentCount("eddies")))
+    end
     playSound("ui_phone_incoming_call")
-    enterPhaseAt(1)
+    Run.pi = 0
+    advancePhase()   -- saute les éventuelles phases conditionnelles en tête
     return true
 end
 
@@ -1477,6 +1660,18 @@ return {
     GetStats = function()
         local out = {}
         for k, v in pairs(Stats) do out[k] = v end
+        return out
+    end,
+    -- L'alignement dérivé des choix persistants (Signal = protéger
+    -- l'héritage de VOLT, Marché = tout monnayer)
+    GetAlignment = function()
+        return { signal = alignmentCount("signal"), eddies = alignmentCount("eddies") }
+    end,
+    GetChoices = function()
+        local out = {}
+        for _, def in ipairs(MISSIONS) do
+            out[def.id] = Stats["choice_" .. def.id]
+        end
         return out
     end,
 }
