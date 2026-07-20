@@ -10,6 +10,7 @@ Mission scriptée complète en Lua (Cyber Engine Tweaks) : intro cinématique, c
 - 📊 **Statistiques persistantes** (`stats.json` dans le dossier du mod) : runs, victoires, répartition des fins ☀/🌑, **meilleur temps** avec annonce de record en fin de mission — consultables via `GetMod("surtension").GetStats()`
 - 📻 **Chatter radio en combat** : répliques aléatoires de VOLT et de la radio Maelstrom pendant les vagues (`CONFIG.barkInterval`)
 - ⚡ **Coût FPS minimal** (sans rien retirer à la qualité) : logique throttlée à ~12 Hz (`CONFIG.pollInterval`) et HUD pré-calculé — le rendu par frame ne fait que des appels ImGui, aucune requête au jeu ; hors mission le mod coûte ~0
+- 🤝 **Co-op** : joue la mission à plusieurs — vagues d'équipe (les Maelstrom et GRIDLOCK tombent quand *l'équipe* a nettoyé) et **fin votée** (☀ LUMIÈRE / 🌑 NOIR à la majorité). Session via `HostCoop()`/`JoinCoop()`, synchro réseau par le relais `coop/relay.js` — détails dans [`coop/README.md`](coop/README.md). Désactivé par défaut : le solo est strictement intact.
 
 > ⚠️ **Spoilers ci-dessous.** Si tu veux jouer la mission à l'aveugle, installe et lance — reviens ici après.
 

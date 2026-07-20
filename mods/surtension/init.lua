@@ -37,6 +37,8 @@ local CONFIG = {
                          -- logique ne tourne pas à chaque frame : invisible
                          -- en jeu, ~5× moins de coût CPU. N'affecte ni le
                          -- contenu, ni le rendu, ni la qualité.
+    coopSync   = 0.4,    -- cadence de synchro co-op (relais)
+    coopStale  = 6.0,    -- pair sans heartbeat depuis N s = parti
 
     -- Ennemis (records TweakDB, hostiles par défaut)
     wave1 = {
@@ -109,6 +111,13 @@ LOCALES.fr = {
     obj_epilogue      = "…",
     hud_hostiles      = "Hostiles : %d",
     hud_distance      = "%d m",
+    hud_coop          = "CO-OP %s · %d joueur(s)",
+    coop_hosted       = "Session co-op créée : %s — lance la mission, tes potes suivront.",
+    coop_joined       = "Session co-op rejointe : %s — tu suis l'hôte.",
+    coop_left         = "Session co-op quittée.",
+    coop_relay        = "Rappel : lance le relais (coop/relay.js) pour la synchro réseau.",
+    vote_cast         = "Vote enregistré : %s. En attente de l'équipe…",
+    coop_vote_hint    = "CO-OP — votez ☀ LUMIÈRE / 🌑 NOIR. La majorité décide.",
 
     -- Déroulé
     wave1_start       = "Maelstrom sur zone — élimine les hostiles !",
@@ -194,6 +203,13 @@ LOCALES.en = {
     obj_epilogue      = "…",
     hud_hostiles      = "Hostiles: %d",
     hud_distance      = "%d m",
+    hud_coop          = "CO-OP %s · %d player(s)",
+    coop_hosted       = "Co-op session created: %s — start the mission, friends will follow.",
+    coop_joined       = "Co-op session joined: %s — following the host.",
+    coop_left         = "Co-op session left.",
+    coop_relay        = "Reminder: run the relay (coop/relay.js) for network sync.",
+    vote_cast         = "Vote cast: %s. Waiting for the team…",
+    coop_vote_hint    = "CO-OP — vote ☀ LIGHT / 🌑 DARK. Majority decides.",
 
     wave1_start       = "Maelstrom on site — eliminate the hostiles!",
     wave_cleared_hack = "Zone cleared. Get close to the transformer and start the override.",
@@ -264,6 +280,179 @@ local function detectLanguage()
     if value:lower():find("fr") then return "fr" end
     return "en"
 end
+
+--------------------------------------------------------------------------
+-- CO-OP : synchronisation de la LOGIQUE de mission entre joueurs
+--------------------------------------------------------------------------
+-- Ce module NE partage PAS le monde physique (personnages, ennemis à
+-- l'écran) — ça, c'est le rôle de CyberpunkMP. Il synchronise la mission :
+-- session partagée, objectifs de combat d'ÉQUIPE (une vague se termine quand
+-- l'équipe l'a nettoyée), et CHOIX votés ensemble.
+--
+-- Transport : le sandbox CET ne peut pas ouvrir de sockets, donc on passe
+-- par des fichiers, relayés sur le réseau par un compagnon (coop/relay.js).
+--   coop_out.json — ce pair ÉCRIT : son état + sa contribution
+--   coop_in.json  — le relais ÉCRIT : l'état d'équipe agrégé (somme des
+--                   « remaining », vote résolu, mission/phase de l'hôte)
+--------------------------------------------------------------------------
+
+local Coop = {
+    role = "off",   -- off | host | join
+    id = nil, code = nil, name = "V",
+    syncTimer = 0,
+    seq = 0,
+    -- état local publié
+    outMission = nil, outPhaseIndex = 0, outPhaseType = "", outObjective = "",
+    outRemaining = 0, outVote = "", outResolved = "",
+    -- état d'équipe reçu (du relais)
+    inb = { peerCount = 1, teamRemaining = 0, mission = nil, phaseIndex = 0,
+            phaseType = "", objective = "", resolved = "", hostTs = 0 },
+}
+
+local COOP_OUT = "coop_out.json"
+local COOP_IN  = "coop_in.json"
+
+local function coopClock()
+    local ok, t = pcall(os.time)
+    if ok and type(t) == "number" then return t end
+    Coop.seq = Coop.seq + 1
+    return Coop.seq
+end
+
+local function coopWriteOut()
+    pcall(function()
+        local json = string.format(
+            '{"schema":1,"id":"%s","role":"%s","code":"%s","ts":%d,' ..
+            '"mission":"%s","phaseIndex":%d,"phaseType":"%s","objective":"%s",' ..
+            '"remaining":%d,"vote":"%s","resolved":"%s"}',
+            tostring(Coop.id), Coop.role, tostring(Coop.code or ""), coopClock(),
+            tostring(Coop.outMission or ""), Coop.outPhaseIndex,
+            Coop.outPhaseType, (Coop.outObjective or ""):gsub('"', "'"),
+            Coop.outRemaining, Coop.outVote or "", Coop.outResolved or "")
+        local f = io.open(COOP_OUT, "w")
+        if f then f:write(json); f:close() end
+    end)
+end
+
+local function coopReadIn()
+    pcall(function()
+        local f = io.open(COOP_IN, "r")
+        if not f then return end
+        local raw = f:read("*a"); f:close()
+        if not raw then return end
+        local function num(key, dflt)
+            return tonumber(raw:match('"' .. key .. '"%s*:%s*(%-?%d+)')) or dflt
+        end
+        local function str(key)
+            return raw:match('"' .. key .. '"%s*:%s*"([^"]*)"') or ""
+        end
+        Coop.inb = {
+            peerCount     = num("peerCount", 1),
+            teamRemaining = num("teamRemaining", 0),
+            mission       = str("mission"),
+            phaseIndex    = num("phaseIndex", 0),
+            phaseType     = str("phaseType"),
+            objective     = str("objective"),
+            resolved      = str("resolved"),
+            hostTs        = num("hostTs", 0),
+        }
+    end)
+end
+
+-- API co-op ---------------------------------------------------------------
+
+function Coop.active() return Coop.role ~= "off" end
+function Coop.isHost() return Coop.role == "host" end
+
+function Coop.host(code, id)
+    Coop.role = "host"
+    Coop.code = code or "NS-COOP"
+    Coop.id = id or ("host-" .. coopClock())
+    Coop.inb.peerCount = 1
+    coopWriteOut()
+    return Coop.code
+end
+
+function Coop.join(code, id)
+    Coop.role = "join"
+    Coop.code = code or "NS-COOP"
+    Coop.id = id or ("join-" .. coopClock())
+    coopReadIn()
+    coopWriteOut()
+    return Coop.code
+end
+
+function Coop.leave()
+    Coop.role = "off"
+    Coop.outMission, Coop.outObjective, Coop.outVote, Coop.outResolved = nil, "", "", ""
+    Coop.outRemaining, Coop.outPhaseIndex = 0, 0
+    pcall(function() local f = io.open(COOP_OUT, "w"); if f then f:write('{"left":true}'); f:close() end end)
+end
+
+-- L'hôte publie la mission/phase courante ; ignoré côté joiner
+function Coop.setMissionPhase(missionId, phaseIndex, phaseType, objective)
+    if Coop.role ~= "host" then return end
+    Coop.outMission = missionId
+    Coop.outPhaseIndex = phaseIndex or 0
+    Coop.outPhaseType = phaseType or ""
+    Coop.outObjective = objective or ""
+end
+
+function Coop.setLocalRemaining(n) Coop.outRemaining = n or 0 end
+function Coop.setVote(key) Coop.outVote = key or "" end
+function Coop.setResolved(key) Coop.outResolved = key or "" end
+
+-- Total d'hostiles restants dans l'équipe (somme relayée) ; nil si co-op off
+function Coop.teamRemaining()
+    if not Coop.active() then return nil end
+    return Coop.inb.teamRemaining or 0
+end
+
+-- La vague est-elle terminée pour l'ÉQUIPE ? (true en solo)
+function Coop.teamClear()
+    if not Coop.active() then return true end
+    return (Coop.inb.teamRemaining or 0) <= 0
+end
+
+-- Cible que l'hôte impose au joiner (mission à suivre)
+function Coop.followTarget()
+    if Coop.role ~= "join" then return nil end
+    if not Coop.inb.mission or Coop.inb.mission == "" then return nil end
+    return { mission = Coop.inb.mission, phaseIndex = Coop.inb.phaseIndex,
+             phaseType = Coop.inb.phaseType, objective = Coop.inb.objective }
+end
+
+-- Choix résolu par le vote (le relais agrège et renvoie « resolved »)
+function Coop.resolvedVote()
+    if not Coop.active() then return nil end
+    local r = Coop.inb.resolved
+    if r == nil or r == "" then return nil end
+    return r
+end
+
+function Coop.peerCount()
+    if not Coop.active() then return 1 end
+    return math.max(1, Coop.inb.peerCount or 1)
+end
+
+function Coop.sync(dt)
+    if not Coop.active() then return end
+    Coop.syncTimer = Coop.syncTimer + (dt or 0)
+    if Coop.syncTimer < CONFIG.coopSync then return end
+    Coop.syncTimer = 0
+    coopWriteOut()
+    coopReadIn()
+end
+
+-- Pour les tests : forcer une synchro immédiate
+function Coop.syncNow()
+    if not Coop.active() then return end
+    coopWriteOut(); coopReadIn()
+end
+
+--------------------------------------------------------------------------
+-- Ennemis : jeux de records par faction (préréglages à vérifier en jeu)
+--------------------------------------------------------------------------
 
 --------------------------------------------------------------------------
 -- État de mission
@@ -612,6 +801,9 @@ local function resetMission()
     Mission.completionNote = nil
     Mission.pollAccum = 0
     Mission.hud = nil
+    if Coop.isHost() then Coop.setMissionPhase(nil, 0, "", "") end
+    Coop.setLocalRemaining(0)
+    Coop.setVote("")
 end
 
 -- Annulation propre : restaure le monde, y compris l'heure si on l'a forcée.
@@ -733,7 +925,8 @@ local function updateWave1(delta)
     -- appelé chaque frame (une seule fois) : compteur HUD à jour et
     -- vieillissement des spawns en attente dès le début de la phase
     local remain = enemiesRemain(delta)
-    if Mission.timer > 2.0 and not remain then
+    Coop.setLocalRemaining(Mission.aliveCount)   -- contribue au total d'équipe
+    if Mission.timer > 2.0 and not remain and Coop.teamClear() then
         beginHack()
     elseif Mission.timer >= CONFIG.waveTimeout then
         -- anti soft-lock : ennemi coincé dans le décor, spawn raté…
@@ -796,6 +989,7 @@ local function updateBoss(delta)
     -- appelé chaque frame (une seule fois) : compteur HUD à jour dès que
     -- les renforts attaquent, pas seulement après l'arrivée de GRIDLOCK
     local remain = enemiesRemain(delta)
+    Coop.setLocalRemaining(Mission.aliveCount)
 
     -- GRIDLOCK arrive après les renforts, avec annonce
     if not Mission.bossSpawned and Mission.timer >= CONFIG.bossDelay then
@@ -809,7 +1003,7 @@ local function updateBoss(delta)
     end
 
     if Mission.bossSpawned and Mission.timer > CONFIG.bossDelay + 3.0
-        and not remain then
+        and not remain and Coop.teamClear() then
         startFinale()
     elseif Mission.timer >= CONFIG.waveTimeout then
         despawnEnemies()
@@ -852,13 +1046,9 @@ local ENDING_ALIASES = {
     sell = "sell", dark = "sell", noir = "sell",
 }
 
-local function chooseEnding(ending)
+-- Applique RÉELLEMENT une fin (récompenses + épilogue)
+local function applyEnding(key)
     if Mission.phase ~= "finale" then return end
-    local key = ENDING_ALIASES[string.lower(tostring(ending or ""))]
-    if not key then
-        screenMessage(L.invalid_choice)
-        return
-    end
     Mission.ending = key
     clearMappins()
     restoreWorld()   -- verrou, brouillage, dilatation, météo : tout est levé
@@ -887,12 +1077,43 @@ local function chooseEnding(ending)
     pcall(recordCompletion)
 end
 
+-- Point d'entrée d'un choix de fin. SOLO : applique tout de suite. CO-OP :
+-- ce n'est qu'un VOTE ; le relais résout à la majorité et applyEnding()
+-- se déclenche pour tout le monde en même temps (via updateFinale).
+local function chooseEnding(ending)
+    if Mission.phase ~= "finale" then return end
+    local key = ENDING_ALIASES[string.lower(tostring(ending or ""))]
+    if not key then
+        screenMessage(L.invalid_choice)
+        return
+    end
+    if Coop.active() then
+        Coop.setVote(key)
+        Coop.syncNow()
+        screenMessage(L.vote_cast:format(key == "grid" and "☀" or "🌑"))
+        return
+    end
+    applyEnding(key)
+end
+
 -- La finale cinématique : répliques de VOLT, puis attente du choix.
 -- Sans touche assignée, bascule de secours sur le choix par déplacement.
 -- Le timeout est mesuré en temps réel (os.time) pour ne pas être étiré
 -- par le ralenti ×0.35 si le delta d'onUpdate est dilaté.
 local function updateFinale(delta)
     playLines(L.FINALE, delta, 0)
+
+    -- CO-OP : la fin se décide par VOTE (majorité, arbitrée par le relais).
+    -- Dès qu'une fin est résolue, tout le monde l'applique ensemble.
+    if Coop.active() then
+        local r = Coop.resolvedVote()
+        if r == "grid" or r == "sell" then applyEnding(r); return end
+        if Mission.step >= #L.FINALE and (Mission.timer % 8) < delta then
+            screenMessage(L.coop_vote_hint)
+        end
+        Mission.timer = Mission.timer + delta
+        return
+    end
 
     local elapsed = Mission.timer
     if Mission.finaleStartedAt then
@@ -954,14 +1175,14 @@ local function hudObjective()
     if phase == "travel" then
         return L.obj_travel, L.hud_distance:format(math.floor(distanceTo(CONFIG.objectivePos)))
     elseif phase == "wave1" then
-        return L.obj_wave1, L.hud_hostiles:format(Mission.aliveCount)
+        return L.obj_wave1, L.hud_hostiles:format(Coop.teamRemaining() or Mission.aliveCount)
     elseif phase == "hack" then
         if Mission.hackNear then
             return L.obj_hack_near, nil
         end
         return L.obj_hack_far, L.hud_distance:format(math.floor(distanceTo(CONFIG.objectivePos)))
     elseif phase == "boss" then
-        return L.obj_boss, L.hud_hostiles:format(Mission.aliveCount)
+        return L.obj_boss, L.hud_hostiles:format(Coop.teamRemaining() or Mission.aliveCount)
     elseif phase == "finale" then
         if Mission.fallbackChoice then return L.obj_finale_walk, nil end
         return L.obj_finale, nil
@@ -990,8 +1211,10 @@ local function refreshHud()
         barFrac = math.min(1.0, Mission.hackProgress / CONFIG.hackDuration)
         barText = string.format("%d%%", math.floor(barFrac * 100))
     end
+    local coopLine
+    if Coop.active() then coopLine = L.hud_coop:format(Coop.role, Coop.peerCount()) end
     Mission.hud = { objective = objective, detail = detail,
-                    barFrac = barFrac, barText = barText }
+                    barFrac = barFrac, barText = barText, coop = coopLine }
 end
 
 local function renderHud()
@@ -1010,6 +1233,7 @@ local function renderHud()
     ImGui.PushStyleColor(ImGuiCol.PlotHistogram, 0.30, 0.91, 0.96, 0.9)
     if ImGui.Begin("SURTENSION_HUD", flags) then
         ImGui.TextColored(0.99, 0.93, 0.04, 1.0, "◤ SURTENSION")
+        if h.coop then ImGui.TextColored(0.30, 0.91, 0.96, 1.0, h.coop) end
         ImGui.Separator()
         ImGui.Text(h.objective)
         if h.barFrac then
@@ -1065,11 +1289,30 @@ registerForEvent("onDraw", function()
     end
 end)
 
+-- Joiner : démarre SURTENSION quand l'hôte l'a lancée
+local function coopFollow()
+    if Coop.role ~= "join" or Mission.phase ~= "idle" then return end
+    local t = Coop.followTarget()
+    if t and t.mission ~= "" then startMission() end
+end
+
+-- Hôte : publie la phase/objectif courant pour l'équipe
+local function coopPublish()
+    if Coop.role ~= "host" then return end
+    if Mission.phase ~= "idle" and Mission.phase ~= "done" then
+        Coop.setMissionPhase("surtension", 0, Mission.phase, hudObjective() or "")
+    end
+end
+
 -- Logique de mission throttlée : chaque frame n'accumule que le delta ; le
 -- corps (tests de distance, scans d'ennemis, HUD) ne tourne qu'à ~12 Hz,
 -- avec le delta cumulé — invisible en jeu, ~5× moins de travail par seconde.
 registerForEvent("onUpdate", function(delta)
-    if Mission.phase == "idle" or Mission.phase == "done" then return end
+    if Coop.active() then Coop.sync(delta) end   -- s'auto-throttle (~0.4 s)
+    if Mission.phase == "idle" or Mission.phase == "done" then
+        coopFollow()   -- au repos, un joiner peut démarrer la mission de l'hôte
+        return
+    end
     Mission.pollAccum = Mission.pollAccum + delta
     if Mission.pollAccum < CONFIG.pollInterval then return end
     local dt = Mission.pollAccum
@@ -1099,6 +1342,7 @@ registerForEvent("onUpdate", function(delta)
     elseif Mission.phase == "finale"   then updateFinale(dt)
     elseif Mission.phase == "epilogue" then updateEpilogue(dt)
     end
+    coopPublish()         -- l'hôte diffuse l'état à l'équipe
     refreshHud()          -- prépare le payload du HUD pour les frames à venir
 end)
 
@@ -1122,6 +1366,17 @@ end)
 
 registerHotkey("surtension_abort", "SURTENSION — annuler la mission / abort mission", function()
     cancelMission(L.aborted)
+end)
+
+registerHotkey("surtension_coop_host", "SURTENSION — héberger une session co-op / host co-op", function()
+    local code = Coop.host()
+    screenMessage(L.coop_hosted:format(code))
+    screenMessage(L.coop_relay)
+end)
+
+registerHotkey("surtension_coop_leave", "SURTENSION — quitter la session co-op / leave co-op", function()
+    Coop.leave()
+    screenMessage(L.coop_left)
 end)
 
 --------------------------------------------------------------------------
@@ -1150,6 +1405,15 @@ return {
     -- choix de fin depuis la console : Choose("grid"|"light"|"lumière") ou
     -- Choose("sell"|"dark"|"noir")
     Choose = chooseEnding,
+    -- Co-op (session partagée : vagues d'équipe + fin votée)
+    HostCoop = function(code, id) local c = Coop.host(code, id); screenMessage(L.coop_hosted:format(c)); return c end,
+    JoinCoop = function(code, id) local c = Coop.join(code, id); screenMessage(L.coop_joined:format(c)); return c end,
+    LeaveCoop = function() Coop.leave(); screenMessage(L.coop_left) end,
+    CoopSync = function() Coop.syncNow() end,
+    GetCoop = function()
+        return { active = Coop.active(), role = Coop.role, code = Coop.code,
+                 peers = Coop.peerCount(), teamRemaining = Coop.teamRemaining() }
+    end,
     -- outil de test : saute à une phase avec son setup complet,
     -- ex. GetMod("surtension").Jump("boss")
     Jump = function(phase)

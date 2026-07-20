@@ -259,3 +259,103 @@ table.insert(SCENARIOS, { name = "piratage : gel à distance, rappel, reprise", 
     tickFor(16)
     expect(MOD.GetPhase() == "twist", "le piratage doit aboutir après le retour")
 end })
+
+-- CO-OP -------------------------------------------------------------------
+-- Le relais réseau est simulé : on écrit coop_in.json (ce que le relais
+-- livrerait) et on lit coop_out.json (ce que le mod publie).
+
+function writeCoopIn(o)
+    o = o or {}
+    local f = io.open("coop_in.json", "w")
+    f:write(string.format(
+        '{"schema":1,"code":"T","host":"h","peerCount":%d,"mission":"%s",' ..
+        '"phaseIndex":%d,"phaseType":"%s","objective":"%s",' ..
+        '"teamRemaining":%d,"resolved":"%s","hostTs":1}',
+        o.peerCount or 2, o.mission or "", o.phaseIndex or 0, o.phaseType or "",
+        o.objective or "", o.teamRemaining or 0, o.resolved or ""))
+    f:close()
+end
+
+function readCoopOut()
+    local f = io.open("coop_out.json", "r")
+    if not f then return "" end
+    local raw = f:read("*a"); f:close()
+    return raw or ""
+end
+
+-- amène l'hôte jusqu'à la vague 1
+local function toWave1()
+    tickFor(17)                          -- intro
+    teleport(OBJ); tick(0.1)             -- arrive sur zone -> wave1
+    expect(MOD.GetPhase() == "wave1", "wave1 attendue, obtenu " .. MOD.GetPhase())
+end
+
+table.insert(SCENARIOS, { name = "co-op : off par defaut (solo intact)", fn = function()
+    loadMod()
+    local c = MOD.GetCoop()
+    expect(not c.active, "co-op off par defaut")
+    expect(c.teamRemaining == nil, "teamRemaining nil en solo")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : la vague 1 attend que l'EQUIPE ait nettoye", fn = function()
+    loadMod()
+    MOD.HostCoop("T", "h")
+    MOD.Start()
+    toWave1()
+    tickFor(3)                           -- spawns materialises
+    writeCoopIn({ teamRemaining = 4, mission = "surtension" })
+    MOD.CoopSync()
+    killAll()
+    tickFor(2)
+    expect(MOD.GetPhase() == "wave1", "la vague ne doit PAS avancer tant que l'equipe n'a pas nettoye")
+    writeCoopIn({ teamRemaining = 0, mission = "surtension" })
+    MOD.CoopSync()
+    tickFor(1)
+    expect(MOD.GetPhase() == "hack", "la vague doit avancer une fois l'equipe au complet")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : l'hote publie sa phase dans coop_out", fn = function()
+    loadMod()
+    MOD.HostCoop("T", "h")
+    MOD.Start()
+    toWave1()
+    tick(0.5)
+    MOD.CoopSync()
+    local raw = readCoopOut()
+    expect(raw:find('"role":"host"'), "coop_out devrait indiquer le role hote")
+    expect(raw:find('"mission":"surtension"'), "coop_out devrait publier la mission")
+    expect(raw:find('"phaseType":"wave1"'), "coop_out devrait publier la phase")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : la fin se resout par VOTE (Lumiere/Noir)", fn = function()
+    loadMod()
+    MOD.HostCoop("T", "h")
+    MOD.Jump("finale")                   -- droit a la finale (run de test)
+    expect(MOD.GetPhase() == "finale", "finale attendue")
+    press("surtension_light")            -- en co-op : c'est un VOTE
+    expect(MOD.GetPhase() == "finale", "un vote ne doit pas conclure immediatement")
+    expect(sawMessage("Vote"), "message de vote absent")
+    expect(readCoopOut():find('"vote":"grid"'), "le vote grid devrait etre publie")
+    writeCoopIn({ mission = "surtension", resolved = "grid" })
+    MOD.CoopSync()
+    tickFor(1)
+    expect(MOD.GetPhase() == "epilogue" or MOD.GetPhase() == "done",
+        "la fin resolue par vote doit s'appliquer")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : le joiner suit la mission de l'hote", fn = function()
+    loadMod()
+    MOD.JoinCoop("T", "j")
+    writeCoopIn({ mission = "surtension" })
+    MOD.CoopSync()
+    tick(0.1)
+    expect(MOD.GetPhase() ~= "idle", "le joiner aurait du demarrer la mission")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : quitter retablit le solo", fn = function()
+    loadMod()
+    MOD.HostCoop("T", "h")
+    expect(MOD.GetCoop().active, "session active")
+    MOD.LeaveCoop()
+    expect(not MOD.GetCoop().active, "quitter desactive le co-op")
+end })
