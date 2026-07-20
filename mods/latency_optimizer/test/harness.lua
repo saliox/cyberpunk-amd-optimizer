@@ -49,6 +49,8 @@ ImGui = {
     TextColored = function(...) if SIM.imgui.textThrows then error("bad Text") end end,
     Text = function(...) if SIM.imgui.textThrows then error("bad Text") end end,
     Separator = function() end,
+    PlotLines = function(...) SIM.imgui.plots = (SIM.imgui.plots or 0) + 1
+        if SIM.imgui.textThrows then error("bad PlotLines") end end,
 }
 ImGuiWindowFlags = { NoTitleBar = 1, AlwaysAutoResize = 2, NoFocusOnAppearing = 4, NoNav = 8 }
 ImGuiCond = { FirstUseEver = 1 }

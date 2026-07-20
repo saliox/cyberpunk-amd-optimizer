@@ -8,9 +8,10 @@ Réduit la **latence d'input** (le délai entre ta touche et l'image) et te donn
 
 | Levier | Effet | Comment |
 |---|---|---|
+| **Mode AUTO** | Mesure ~8 s puis **applique tout seul le cap optimal** de ta machine + VSync off — la boucle se referme sans rien faire | touche « mode AUTO », `SetAutoTune(true)`, ou depuis l'app |
 | **Cap FPS** sous ton max soutenu | Le GPU n'est plus saturé à 100 % → la file de rendu raccourcit → **latence plus basse et plus stable** | `ApplyLowLatency()` pose un cap = 97 % de ton FPS médian mesuré |
 | **VSync coupé** | Supprime jusqu'à ~1 image de latence d'attente | `ApplyLowLatency()` |
-| **Compteur de latence** | Tu vois ta latence de rendu (ms), tes 1 % low et tes saccades en direct → tu peux régler et vérifier | overlay en haut à droite |
+| **Compteur + courbe** | Latence de rendu (ms), 1 % / 0.1 % low, saccades et **courbe de frametime** en direct → tu vois les pics et vérifies l'effet | overlay en haut à droite |
 
 La règle d'or du cap : capper **légèrement sous** ce que ta machine soutient (pas au-dessus) garde le pipeline court. Le mod calcule ce cap pour **ta** machine à partir de la mesure.
 
@@ -22,10 +23,15 @@ Ces leviers sont réels mais hors de portée d'un mod en jeu — utilise l'**app
 - **Priorité CPU** du process, **Game Mode** Windows, plein écran exclusif
 - Overlay/limiteur externe (RTSS) si tu préfères capper hors du jeu
 
+## Le mode AUTO (ferme la boucle)
+
+Active-le (touche dédiée, `SetAutoTune(true)`, ou depuis l'app) : le mod **mesure quelques secondes ta perf réelle, puis applique tout seul le cap optimal + VSync off**, une seule fois. Le titre de l'overlay passe en `[AUTO]` une fois le cap posé. Opt-in par sécurité (il modifie tes réglages vidéo). `Reset()` le ré-arme pour re-mesurer.
+
 ## Le compteur de latence
 
 - **Rendu (ms)** : le temps de frame, la vraie mesure liée à la latence. Vert < 11 ms (~90 fps), jaune < 20 ms, rouge au-delà.
-- **FPS** et **1 % low** (les 1 % de frames les plus lentes — ce qui « pique » en jeu).
+- **FPS**, **1 % low** et **0.1 % low** (les frames les plus lentes — ce qui « pique » en jeu).
+- **Courbe de frametime** : les derniers points en direct — les saccades apparaissent en pics visibles.
 - **Saccades** : part des frames anormalement longues (au-dessus de `CONFIG.stutterMs`, 40 ms par défaut) — chaque saccade est un pic de latence.
 - **Cap conseillé** : la valeur à mettre pour du frame-pacing optimal sur ta machine.
 
@@ -62,4 +68,4 @@ Le mesureur échantillonne chaque frame (arithmétique pure, aucune requête au 
 
 ## Tests
 
-`python3 test/run.py` (requiert `pip install lupa`) — **19 scénarios** : exactitude de la mesure (frametime, FPS, 1 % low, saccades), cap conseillé, application des réglages basse latence et netteté, isolation des erreurs du HUD, fenêtre glissante bornée, robustesse aux frametimes invalides, et le **pont avec l'app** (publication du statut, heartbeat initial, exécution des commandes + accusé, déduplication par id, cap piloté par l'app, ping/pong, commandes malformées ignorées). Le module Node `bridge/latency-bridge.js` a en plus été testé en round-trip contre le JSON réel du mod.
+`python3 test/run.py` (requiert `pip install lupa`) — **25 scénarios** (dont mode AUTO : application après warmup, une seule fois, off par défaut ; 0.1 % low ; courbe de frametime ; activation AUTO à distance via le pont) : exactitude de la mesure (frametime, FPS, 1 % low, saccades), cap conseillé, application des réglages basse latence et netteté, isolation des erreurs du HUD, fenêtre glissante bornée, robustesse aux frametimes invalides, et le **pont avec l'app** (publication du statut, heartbeat initial, exécution des commandes + accusé, déduplication par id, cap piloté par l'app, ping/pong, commandes malformées ignorées). Le module Node `bridge/latency-bridge.js` a en plus été testé en round-trip contre le JSON réel du mod.

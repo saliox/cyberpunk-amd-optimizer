@@ -119,6 +119,56 @@ table.insert(SCENARIOS, { name = "robustesse : frametimes nuls/négatifs ignoré
     expect(s.samples == 0, "les deltas non positifs ne doivent pas être comptés")
 end })
 
+-- Mode AUTO + courbe + 0.1% low -------------------------------------------
+
+table.insert(SCENARIOS, { name = "auto : mesure puis applique le cap tout seul après le warmup", fn = function()
+    loadMod()
+    MOD.SetAutoTune(true)
+    -- avant le warmup (8 s), rien n'est appliqué
+    feedFps(120, 5)
+    expect(SIM.settings["/video/display|MaxFPS"] == nil, "auto ne doit pas agir avant le warmup")
+    -- au-delà du warmup, le cap optimal est posé une fois
+    feedFps(120, 5)
+    expect(SIM.settings["/video/display|MaxFPS"] == 116, "auto aurait dû poser le cap (116)")
+    expect(SIM.settings["/video/display|VSync"] == false, "auto aurait dû couper le VSync")
+    local st = MOD.GetStats()
+    expect(st.autoApplied == true, "GetStats devrait signaler autoApplied")
+end })
+
+table.insert(SCENARIOS, { name = "auto : n'applique qu'une seule fois (pas de flip-flop)", fn = function()
+    loadMod()
+    MOD.SetAutoTune(true)
+    feedFps(120, 10)     -- applique
+    SIM.settings["/video/display|MaxFPS"] = nil
+    feedFps(120, 10)     -- ne doit PAS réappliquer
+    expect(SIM.settings["/video/display|MaxFPS"] == nil,
+        "auto ne doit pas réappliquer tant qu'il n'est pas ré-armé")
+end })
+
+table.insert(SCENARIOS, { name = "auto : off par défaut → aucun réglage touché", fn = function()
+    loadMod()
+    feedFps(120, 12)     -- autoTune off par défaut
+    expect(SIM.settings["/video/display|MaxFPS"] == nil, "auto off ne doit rien appliquer")
+end })
+
+table.insert(SCENARIOS, { name = "mesure : le 0.1% low est renseigné et <= 1% low", fn = function()
+    loadMod()
+    for _ = 1, 998 do frame(0.010) end
+    frame(0.100); frame(0.100)
+    local s = MOD.GetStats()
+    expect(s.low01 > 0, "0.1% low devrait être renseigné")
+    expect(s.low01 <= s.low1 + 0.5, "0.1% low doit être <= 1% low (frames les plus lentes)")
+end })
+
+table.insert(SCENARIOS, { name = "courbe : PlotLines dessiné quand des données existent", fn = function()
+    loadMod()
+    feedFps(90, 2)
+    SIM.imgui.plots = 0
+    draw()
+    expect((SIM.imgui.plots or 0) >= 1, "la courbe de frametime aurait dû être dessinée")
+    expect(SIM.imgui.push == SIM.imgui.pop, "pile ImGui déséquilibrée avec la courbe")
+end })
+
 -- Pont avec l'app ---------------------------------------------------------
 
 local function readJson(name)
@@ -197,6 +247,22 @@ table.insert(SCENARIOS, { name = "pont : ping → pong, et set_overlay pilote l'
     local p = SIM.imgui.push
     draw()
     expect(SIM.imgui.push == p, "set_overlay 0 doit couper le dessin")
+end })
+
+table.insert(SCENARIOS, { name = "pont : l'app active le mode AUTO à distance", fn = function()
+    loadMod()
+    writeJson("bridge_command.json", '{"id":11,"cmd":"auto_tune","value":1}')
+    MOD.PollCommands()
+    expect(MOD.GetStats().autoTune == true, "auto_tune 1 devrait activer le mode AUTO")
+    -- et il s'exécute ensuite tout seul
+    feedFps(120, 12)
+    expect(SIM.settings["/video/display|MaxFPS"] == 116, "AUTO piloté par l'app aurait dû poser le cap")
+    -- le statut publié reflète l'état auto
+    MOD.PushStatus()
+    local raw = readJson("bridge_status.json")
+    expect(raw:find('"autoTune":true'), "le statut devrait exposer autoTune")
+    expect(raw:find('"autoApplied":true'), "le statut devrait exposer autoApplied")
+    expect(raw:find('"low01":'), "le statut devrait exposer low01")
 end })
 
 table.insert(SCENARIOS, { name = "pont : commande malformée ignorée sans crash", fn = function()

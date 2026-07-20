@@ -37,6 +37,16 @@ local CONFIG = {
     stutterMs   = 40.0,   -- seuil de « saccade » : frame plus longue que ça
     capHeadroom = 0.97,   -- cap conseillé = 97 % du FPS médian soutenu
 
+    -- Mode AUTO : mesure quelques secondes puis applique le cap optimal tout
+    -- seul (opt-in — modifie tes réglages vidéo sans te demander).
+    autoTune    = false,  -- true : ferme la boucle automatiquement
+    autoWarmup  = 8.0,    -- secondes de mesure avant d'appliquer le cap
+    autoMinSamples = 60,  -- refuse d'agir sans assez de frames mesurées
+
+    -- Courbe de frametime dans l'overlay (voir les saccades en un coup d'œil)
+    graph        = true,
+    graphSamples = 120,   -- points affichés dans la courbe
+
     -- Réglages basse latence appliqués par le préréglage (best-effort).
     -- group/var = chemin de la variable de réglage CET ; ils varient selon
     -- la version du jeu — ajuste-les ici si un réglage ne « prend » pas.
@@ -76,9 +86,14 @@ local LOCALES = {
         hud_ms      = "Rendu : %.1f ms",
         hud_fps     = "FPS : %d",
         hud_low     = "1%% low : %d FPS",
+        hud_low01   = "0.1%% low : %d FPS",
         hud_stutter = "Saccades : %.0f %%",
         hud_cap     = "Cap conseillé : %d FPS",
         hud_wait    = "Mesure en cours…",
+        hud_graph   = "frametime (ms)",
+        auto_on     = "Mode AUTO activé — mesure puis application du cap optimal.",
+        auto_off    = "Mode AUTO désactivé.",
+        auto_applied = "AUTO : cap appliqué à %d FPS + VSync off.",
     },
     en = {
         loaded      = "[LATENCY] Loaded. Console: GetMod(\"latency_optimizer\").Help()",
@@ -93,9 +108,14 @@ local LOCALES = {
         hud_ms      = "Render: %.1f ms",
         hud_fps     = "FPS: %d",
         hud_low     = "1%% low: %d FPS",
+        hud_low01   = "0.1%% low: %d FPS",
         hud_stutter = "Stutter: %.0f %%",
         hud_cap     = "Suggested cap: %d FPS",
         hud_wait    = "Measuring…",
+        hud_graph   = "frametime (ms)",
+        auto_on     = "AUTO mode on — measuring, then applying the optimal cap.",
+        auto_off    = "AUTO mode off.",
+        auto_applied = "AUTO: cap applied at %d FPS + VSync off.",
     },
 }
 
@@ -128,9 +148,11 @@ local M = {
     idx = 0, count = 0,
     displayTimer = 0,
     ready = false,
-    disp = { fps = 0, ms = 0, low1 = 0, stutterPct = 0, cap = 0, samples = 0 },
+    disp = { fps = 0, ms = 0, low1 = 0, low01 = 0, stutterPct = 0, cap = 0, samples = 0 },
     hud = nil,        -- payload HUD pré-calculé
     hudDisabled = false,
+    autoApplied = false,  -- le mode AUTO a déjà appliqué son cap
+    autoElapsed = 0,      -- temps de mesure accumulé pour le mode AUTO
 }
 
 local function resetMeter()
@@ -138,8 +160,10 @@ local function resetMeter()
     M.idx, M.count = 0, 0
     M.displayTimer = 0
     M.ready = false
-    M.disp = { fps = 0, ms = 0, low1 = 0, stutterPct = 0, cap = 0, samples = 0 }
+    M.disp = { fps = 0, ms = 0, low1 = 0, low01 = 0, stutterPct = 0, cap = 0, samples = 0 }
     M.hud = nil
+    M.autoApplied = false   -- ré-arme le mode AUTO
+    M.autoElapsed = 0
 end
 
 -- Calcule les statistiques LIVE à partir de la fenêtre glissante. Renvoie
@@ -156,13 +180,17 @@ local function computeStats()
     local avg = sum / n
     local fps = avg > 0 and 1 / avg or 0
 
-    -- 1% low : FPS moyen des 1 % de frames les plus longues
+    -- 1% / 0.1% low : FPS moyen des X % de frames les plus longues
     table.sort(tmp, function(a, b) return a > b end)  -- décroissant
-    local k = math.max(1, math.floor(n * 0.01))
-    local worst = 0
-    for i = 1, k do worst = worst + tmp[i] end
-    worst = worst / k
-    local low1 = worst > 0 and 1 / worst or 0
+    local function lowAvg(frac)
+        local k = math.max(1, math.floor(n * frac))
+        local worst = 0
+        for i = 1, k do worst = worst + tmp[i] end
+        worst = worst / k
+        return worst > 0 and 1 / worst or 0
+    end
+    local low1  = lowAvg(0.01)
+    local low01 = lowAvg(0.001)
 
     -- saccades : part des frames au-dessus du seuil
     local st = 0
@@ -175,8 +203,24 @@ local function computeStats()
     local medFps = median > 0 and 1 / median or 0
     local cap = math.floor(medFps * CONFIG.capHeadroom)
 
-    return { fps = fps, ms = avg * 1000, low1 = low1,
+    return { fps = fps, ms = avg * 1000, low1 = low1, low01 = low01,
              stutterPct = stutterPct, cap = cap, samples = n }
+end
+
+-- Construit la courbe de frametime (ms) des derniers points, dans l'ordre
+-- chronologique (plus ancien à gauche). Renvoie aussi l'échelle max.
+local function buildGraph()
+    local n = M.count
+    if n == 0 then return nil, 0 end
+    local take = math.min(CONFIG.graphSamples, n)
+    local plot, maxMs = {}, 0
+    for j = take - 1, 0, -1 do
+        local pos = ((M.idx - 1 - j) % n) + 1
+        local ms = M.frames[pos] * 1000
+        plot[#plot + 1] = ms
+        if ms > maxMs then maxMs = ms end
+    end
+    return plot, math.max(20, maxMs)   -- plancher à 20 ms pour un rendu stable
 end
 
 -- Appelé chaque frame : pousse le frametime (arithmétique pure, ~gratuit).
@@ -302,17 +346,29 @@ local function readFile(name)
     return content
 end
 
+-- Active/désactive le mode AUTO (ré-arme la mesure à chaque activation)
+local function setAutoTune(on)
+    CONFIG.autoTune = on and true or false
+    if CONFIG.autoTune then
+        M.autoApplied = false
+        M.autoElapsed = 0
+    end
+    return CONFIG.autoTune
+end
+
 -- Écrit le statut live (stats + heartbeat) pour l'app
 local function writeStatus()
     local d = computeStats()
     local ready = d ~= nil
-    d = d or { fps = 0, ms = 0, low1 = 0, stutterPct = 0, cap = 0, samples = 0 }
+    d = d or { fps = 0, ms = 0, low1 = 0, low01 = 0, stutterPct = 0, cap = 0, samples = 0 }
     local json = string.format(
         '{"schema":1,"mod":"latency_optimizer","version":"1.0","ts":%d,' ..
-        '"ready":%s,"fps":%.1f,"frametimeMs":%.2f,"low1":%.1f,' ..
-        '"stutterPct":%.1f,"suggestedCap":%d,"samples":%d,"overlay":%s}',
-        nowTs(), jbool(ready), d.fps, d.ms, d.low1,
-        d.stutterPct, d.cap, d.samples, jbool(CONFIG.overlay))
+        '"ready":%s,"fps":%.1f,"frametimeMs":%.2f,"low1":%.1f,"low01":%.1f,' ..
+        '"stutterPct":%.1f,"suggestedCap":%d,"samples":%d,"overlay":%s,' ..
+        '"autoTune":%s,"autoApplied":%s}',
+        nowTs(), jbool(ready), d.fps, d.ms, d.low1, d.low01 or 0,
+        d.stutterPct, d.cap, d.samples, jbool(CONFIG.overlay),
+        jbool(CONFIG.autoTune), jbool(M.autoApplied))
     writeFile(STATUS_FILE, json)
 end
 
@@ -334,6 +390,9 @@ local function runCommand(cmd, cap, value)
         CONFIG.overlay = (value ~= 0)
         if not CONFIG.overlay then M.hud = nil end
         return true, "set_overlay: " .. tostring(CONFIG.overlay)
+    elseif cmd == "auto_tune" then
+        setAutoTune(value ~= 0)
+        return true, "auto_tune: " .. tostring(CONFIG.autoTune)
     elseif cmd == "ping" then
         return true, "pong"
     end
@@ -386,15 +445,20 @@ refreshHud = function()
         return
     end
     local d = M.disp
+    local plot, plotMax
+    if CONFIG.graph then plot, plotMax = buildGraph() end
     M.hud = {
         ms      = L.hud_ms:format(d.ms),
         fps     = L.hud_fps:format(math.floor(d.fps + 0.5)),
         low1    = L.hud_low:format(math.floor(d.low1 + 0.5)),
+        low01   = L.hud_low01:format(math.floor((d.low01 or 0) + 0.5)),
         stutter = L.hud_stutter:format(d.stutterPct),
         cap     = L.hud_cap:format(d.cap),
+        auto    = M.autoApplied,   -- badge « AUTO » quand le cap a été posé
         -- couleur du frametime : vert < 11 ms (~90 fps), jaune < 20 ms, rouge sinon
         msColor = d.ms < 11 and 1 or (d.ms < 20 and 2 or 3),
         stutterHot = d.stutterPct >= 2,
+        plot = plot, plotMax = plotMax,
     }
 end
 
@@ -412,7 +476,11 @@ local function renderHud()
     ImGui.PushStyleColor(ImGuiCol.WindowBg, 0.02, 0.02, 0.04, 0.65)
     ImGui.PushStyleColor(ImGuiCol.Border, 0.30, 0.91, 0.96, 0.55)
     if ImGui.Begin("LATENCY_METER", flags) then
-        ImGui.TextColored(0.30, 0.91, 0.96, 1.0, L.hud_title)
+        if h.auto then
+            ImGui.TextColored(0.24, 0.94, 0.55, 1.0, L.hud_title .. "  [AUTO]")
+        else
+            ImGui.TextColored(0.30, 0.91, 0.96, 1.0, L.hud_title)
+        end
         ImGui.Separator()
         if h.wait then
             ImGui.Text(L.hud_wait)
@@ -422,8 +490,12 @@ local function renderHud()
             else ImGui.TextColored(1.0, 0.23, 0.30, 1.0, h.ms) end
             ImGui.Text(h.fps)
             ImGui.Text(h.low1)
+            ImGui.Text(h.low01)
             if h.stutterHot then ImGui.TextColored(1.0, 0.23, 0.30, 1.0, h.stutter)
             else ImGui.Text(h.stutter) end
+            if h.plot and #h.plot > 1 then
+                ImGui.PlotLines("", h.plot, #h.plot, 0, L.hud_graph, 0, h.plotMax, 220, 40)
+            end
             ImGui.Separator()
             ImGui.TextColored(0.99, 0.93, 0.04, 1.0, h.cap)
         end
@@ -444,10 +516,27 @@ registerForEvent("onInit", function()
     if CONFIG.bridge then writeStatus() end   -- heartbeat initial pour l'app
 end)
 
--- Mesure chaque frame (pur Lua, négligeable) ; l'affichage et le pont vers
--- l'app sont throttlés (écriture ~1×/s, lecture des commandes ~2×/s).
+-- Mode AUTO : après autoWarmup secondes de mesure, applique une seule fois
+-- le cap optimal calculé (referme la boucle sans intervention).
+local function autoTuneTick(delta)
+    if not CONFIG.autoTune or M.autoApplied then return end
+    M.autoElapsed = M.autoElapsed + delta
+    if M.autoElapsed < CONFIG.autoWarmup then return end
+    local s = computeStats()
+    if s and s.samples >= CONFIG.autoMinSamples and s.cap > 0 then
+        applyLowLatency(s.cap)
+        M.autoApplied = true
+        local msg = L.auto_applied:format(s.cap)
+        screenMessage(msg)
+        print("[LATENCY] " .. msg)
+    end
+end
+
+-- Mesure chaque frame (pur Lua, négligeable) ; l'affichage, l'auto-tune et
+-- le pont vers l'app sont throttlés / conditionnels.
 registerForEvent("onUpdate", function(delta)
     sample(delta)
+    autoTuneTick(delta)
     bridgeTick(delta)
 end)
 
@@ -471,6 +560,11 @@ registerHotkey("lat_apply", "LATENCY — appliquer basse latence / apply low lat
     applyLowLatency()
 end)
 
+registerHotkey("lat_auto", "LATENCY — mode AUTO on/off / toggle auto-tune", function()
+    setAutoTune(not CONFIG.autoTune)
+    screenMessage(CONFIG.autoTune and L.auto_on or L.auto_off)
+end)
+
 registerHotkey("lat_overlay", "LATENCY — afficher/masquer le compteur / toggle meter", function()
     CONFIG.overlay = not CONFIG.overlay
     if not CONFIG.overlay then M.hud = nil end
@@ -491,15 +585,18 @@ return {
     GetStats = function()
         local d = computeStats()
         if not d then
-            return { fps = 0, frametimeMs = 0, low1 = 0, stutterPct = 0,
-                     suggestedCap = 0, samples = 0, ready = false }
+            return { fps = 0, frametimeMs = 0, low1 = 0, low01 = 0, stutterPct = 0,
+                     suggestedCap = 0, samples = 0, ready = false,
+                     autoTune = CONFIG.autoTune, autoApplied = M.autoApplied }
         end
-        return { fps = d.fps, frametimeMs = d.ms, low1 = d.low1,
+        return { fps = d.fps, frametimeMs = d.ms, low1 = d.low1, low01 = d.low01,
                  stutterPct = d.stutterPct, suggestedCap = d.cap,
-                 samples = d.samples, ready = true }
+                 samples = d.samples, ready = true,
+                 autoTune = CONFIG.autoTune, autoApplied = M.autoApplied }
     end,
     ApplyLowLatency = applyLowLatency,
     ApplyClarity = applyClarity,
+    SetAutoTune = setAutoTune,
     Reset = resetMeter,
     ToggleOverlay = function()
         CONFIG.overlay = not CONFIG.overlay

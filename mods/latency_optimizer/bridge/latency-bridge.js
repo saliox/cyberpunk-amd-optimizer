@@ -132,6 +132,7 @@ class LatencyBridge extends EventEmitter {
   applyLowLatency(cap) { return this.sendCommand('apply_low_latency', cap ? { cap } : {}); }
   setCap(cap)          { return this.sendCommand('set_cap', { cap }); }
   applyClarity()       { return this.sendCommand('apply_clarity'); }
+  autoTune(on)         { return this.sendCommand('auto_tune', { value: on ? 1 : 0 }); }
   reset()              { return this.sendCommand('reset'); }
   setOverlay(on)       { return this.sendCommand('set_overlay', { value: on ? 1 : 0 }); }
   ping()               { return this.sendCommand('ping'); }

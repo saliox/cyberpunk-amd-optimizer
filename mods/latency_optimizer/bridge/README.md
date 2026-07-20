@@ -12,7 +12,7 @@ Trois fichiers dans `…/cyber_engine_tweaks/mods/latency_optimizer/` :
 
 | Fichier | Écrit par | Contenu |
 |---|---|---|
-| `bridge_status.json` | **le mod** (~1×/s) | `{ schema, mod, version, ts, ready, fps, frametimeMs, low1, stutterPct, suggestedCap, samples, overlay }` |
+| `bridge_status.json` | **le mod** (~1×/s) | `{ schema, mod, version, ts, ready, fps, frametimeMs, low1, low01, stutterPct, suggestedCap, samples, overlay, autoTune, autoApplied }` |
 | `bridge_command.json` | **l'app** | `{ id, cmd, cap?, value? }` — `id` strictement croissant |
 | `bridge_ack.json` | **le mod** | `{ id, ok, message, ts }` — réponse à la commande `id` |
 
@@ -24,6 +24,7 @@ Le mod ne traite chaque `id` qu'**une fois** (déduplication), puis neutralise l
 |---|---|---|
 | `apply_low_latency` | cap FPS conseillé + VSync off | `cap?` (sinon calculé) |
 | `set_cap` | pose un cap FPS précis | `cap` |
+| `auto_tune` | active/coupe le mode AUTO (mesure puis applique seul) | `value` 0/1 |
 | `apply_clarity` | coupe flou/aberration/grain (netteté) | — |
 | `reset` | réinitialise les mesures | — |
 | `set_overlay` | affiche/masque le compteur | `value` 0/1 |
