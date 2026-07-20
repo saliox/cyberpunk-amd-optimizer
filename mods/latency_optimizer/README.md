@@ -27,6 +27,11 @@ Ces leviers sont réels mais hors de portée d'un mod en jeu — utilise l'**app
 
 Active-le (touche dédiée, `SetAutoTune(true)`, ou depuis l'app) : le mod **mesure quelques secondes ta perf réelle, puis applique tout seul le cap optimal + VSync off**, une seule fois. Le titre de l'overlay passe en `[AUTO]` une fois le cap posé. Opt-in par sécurité (il modifie tes réglages vidéo). `Reset()` le ré-arme pour re-mesurer.
 
+## Annuler & mémoire de profil
+
+- **Restaurer** (touche dédiée, `Restore()`, ou depuis l'app) : le mod **capture tes réglages d'origine avant** la première modification et sait les rétablir — appliquer la basse latence n'est plus une porte à sens unique.
+- **Profil par résolution** (`latency_profiles.json`) : une fois le cap optimal trouvé, il est **mémorisé pour ta résolution** et réutilisé instantanément (au démarrage, ou par un Apply sans mesure) — plus besoin de re-mesurer à chaque session.
+
 ## Le compteur de latence
 
 - **Rendu (ms)** : le temps de frame, la vraie mesure liée à la latence. Vert < 11 ms (~90 fps), jaune < 20 ms, rouge au-delà.
@@ -68,4 +73,4 @@ Le mesureur échantillonne chaque frame (arithmétique pure, aucune requête au 
 
 ## Tests
 
-`python3 test/run.py` (requiert `pip install lupa`) — **25 scénarios** (dont mode AUTO : application après warmup, une seule fois, off par défaut ; 0.1 % low ; courbe de frametime ; activation AUTO à distance via le pont) : exactitude de la mesure (frametime, FPS, 1 % low, saccades), cap conseillé, application des réglages basse latence et netteté, isolation des erreurs du HUD, fenêtre glissante bornée, robustesse aux frametimes invalides, et le **pont avec l'app** (publication du statut, heartbeat initial, exécution des commandes + accusé, déduplication par id, cap piloté par l'app, ping/pong, commandes malformées ignorées). Le module Node `bridge/latency-bridge.js` a en plus été testé en round-trip contre le JSON réel du mod.
+`python3 test/run.py` (requiert `pip install lupa`) — **30 scénarios** (dont mode AUTO, 0.1 % low, courbe de frametime, **restaurer** — capture/annule/rien-à-annuler, **mémoire de profil** — persistance et réutilisation, et le pilotage à distance via le pont : AUTO et restore) : exactitude de la mesure (frametime, FPS, 1 % low, saccades), cap conseillé, application des réglages basse latence et netteté, isolation des erreurs du HUD, fenêtre glissante bornée, robustesse aux frametimes invalides, et le **pont avec l'app** (publication du statut, heartbeat initial, exécution des commandes + accusé, déduplication par id, cap piloté par l'app, ping/pong, commandes malformées ignorées). Le module Node `bridge/latency-bridge.js` a en plus été testé en round-trip contre le JSON réel du mod.

@@ -31,9 +31,14 @@ Game = {
     GetSettingsSystem = function()
         return {
             GetVar = function(self, group, var)
-                return { SetValue = function(self2, value)
-                    SIM.settings[group .. "|" .. var] = value
-                end }
+                local key = group .. "|" .. var
+                return {
+                    SetValue = function(self2, value) SIM.settings[key] = value end,
+                    GetValue = function(self2)
+                        if key == "/language|OnScreen" then return SIM.languageValue end
+                        return SIM.settings[key]
+                    end,
+                }
             end,
             ConfirmChanges = function(self) end,
         }

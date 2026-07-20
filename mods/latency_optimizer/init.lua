@@ -94,6 +94,9 @@ local LOCALES = {
         auto_on     = "Mode AUTO activé — mesure puis application du cap optimal.",
         auto_off    = "Mode AUTO désactivé.",
         auto_applied = "AUTO : cap appliqué à %d FPS + VSync off.",
+        restored    = "Réglages d'origine restaurés (%d).",
+        restore_none = "Rien à restaurer (aucun réglage appliqué).",
+        profile_hint = "Profil %s : cap mémorisé %d FPS.",
     },
     en = {
         loaded      = "[LATENCY] Loaded. Console: GetMod(\"latency_optimizer\").Help()",
@@ -116,6 +119,9 @@ local LOCALES = {
         auto_on     = "AUTO mode on — measuring, then applying the optimal cap.",
         auto_off    = "AUTO mode off.",
         auto_applied = "AUTO: cap applied at %d FPS + VSync off.",
+        restored    = "Original settings restored (%d).",
+        restore_none = "Nothing to restore (no setting applied).",
+        profile_hint = "Profile %s: remembered cap %d FPS.",
     },
 }
 
@@ -153,6 +159,8 @@ local M = {
     hudDisabled = false,
     autoApplied = false,  -- le mode AUTO a déjà appliqué son cap
     autoElapsed = 0,      -- temps de mesure accumulé pour le mode AUTO
+    restore = {},         -- instantané des réglages d'origine (pour annuler)
+    applied = false,      -- des réglages basse latence sont-ils appliqués ?
 }
 
 local function resetMeter()
@@ -278,22 +286,107 @@ local function applySettings(list, autoCapValue)
     return applied
 end
 
+-- Lit les valeurs ACTUELLES des réglages (pour pouvoir les restaurer)
+local function captureCurrent(list)
+    local sys = nil
+    pcall(function() sys = Game.GetSettingsSystem() end)
+    if not sys then return {} end
+    local snap = {}
+    for _, s in ipairs(list) do
+        local ok, val = pcall(function() return sys:GetVar(s.group, s.var):GetValue() end)
+        if ok then snap[#snap + 1] = { group = s.group, var = s.var, value = val } end
+    end
+    return snap
+end
+
+-- Réapplique un instantané de réglages (= annuler)
+local function restoreSnapshot(snap)
+    local sys = nil
+    pcall(function() sys = Game.GetSettingsSystem() end)
+    if not sys or not snap then return 0 end
+    local n = 0
+    for _, s in ipairs(snap) do
+        local ok = pcall(function() sys:GetVar(s.group, s.var):SetValue(s.value) end)
+        if ok then n = n + 1 end
+    end
+    pcall(function() sys:ConfirmChanges() end)
+    return n
+end
+
+-- Profils mémorisés par résolution (latency_profiles.json) : le cap optimal
+-- une fois trouvé est réutilisable instantanément à la prochaine session,
+-- sans re-mesurer.
+local Profiles = {}
+
+local function resolutionKey()
+    local w, h = 1920, 1080
+    pcall(function() w, h = GetDisplayResolution() end)
+    return string.format("%dx%d", math.floor(w or 1920), math.floor(h or 1080))
+end
+
+local function loadProfiles()
+    pcall(function()
+        local f = io.open("latency_profiles.json", "r")
+        if not f then return end
+        local raw = f:read("*a"); f:close()
+        for key, cap in string.gmatch(raw or "", '"(%d+x%d+)"%s*:%s*(%d+)') do
+            Profiles[key] = tonumber(cap)
+        end
+    end)
+end
+
+local function saveProfiles()
+    pcall(function()
+        local parts = {}
+        for k, v in pairs(Profiles) do
+            parts[#parts + 1] = string.format('"%s":%d', k, math.floor(v))
+        end
+        local f = io.open("latency_profiles.json", "w")
+        if f then f:write("{" .. table.concat(parts, ",") .. "}"); f:close() end
+    end)
+end
+
 local function applyLowLatency(capOverride)
     local cap = capOverride
     if not cap or cap <= 0 then
         local live = computeStats()
         cap = live and live.cap or 0
     end
+    if cap <= 0 then cap = Profiles[resolutionKey()] or 60 end  -- profil mémo, sinon 60
+
+    -- capture les réglages d'origine AVANT la 1re modification (pour Restore)
+    if #M.restore == 0 then M.restore = captureCurrent(CONFIG.latencySettings) end
+
     local applied = applySettings(CONFIG.latencySettings, cap)
     if #applied == 0 then
         screenMessage(L.apply_none)
         print("[LATENCY] " .. L.apply_none)
         return applied
     end
+    M.applied = true
+    if cap > 0 then                       -- mémorise le cap pour cette résolution
+        Profiles[resolutionKey()] = cap
+        saveProfiles()
+    end
     local msg = L.applied:format(#applied, table.concat(applied, ", "))
     screenMessage(msg)
     print("[LATENCY] " .. msg)
     return applied
+end
+
+-- Annule : restaure les réglages d'origine capturés au premier Apply
+local function restoreSettings()
+    if #M.restore == 0 then
+        screenMessage(L.restore_none)
+        return 0
+    end
+    local n = restoreSnapshot(M.restore)
+    M.restore = {}
+    M.applied = false
+    local msg = L.restored:format(n)
+    screenMessage(msg)
+    print("[LATENCY] " .. msg)
+    return n
 end
 
 local function applyClarity()
@@ -365,10 +458,11 @@ local function writeStatus()
         '{"schema":1,"mod":"latency_optimizer","version":"1.0","ts":%d,' ..
         '"ready":%s,"fps":%.1f,"frametimeMs":%.2f,"low1":%.1f,"low01":%.1f,' ..
         '"stutterPct":%.1f,"suggestedCap":%d,"samples":%d,"overlay":%s,' ..
-        '"autoTune":%s,"autoApplied":%s}',
+        '"autoTune":%s,"autoApplied":%s,"applied":%s,"restorable":%s}',
         nowTs(), jbool(ready), d.fps, d.ms, d.low1, d.low01 or 0,
         d.stutterPct, d.cap, d.samples, jbool(CONFIG.overlay),
-        jbool(CONFIG.autoTune), jbool(M.autoApplied))
+        jbool(CONFIG.autoTune), jbool(M.autoApplied),
+        jbool(M.applied), jbool(#M.restore > 0))
     writeFile(STATUS_FILE, json)
 end
 
@@ -393,6 +487,9 @@ local function runCommand(cmd, cap, value)
     elseif cmd == "auto_tune" then
         setAutoTune(value ~= 0)
         return true, "auto_tune: " .. tostring(CONFIG.autoTune)
+    elseif cmd == "restore" then
+        local n = restoreSettings()
+        return true, ("restore: %d réglage(s)"):format(n)
     elseif cmd == "ping" then
         return true, "pong"
     end
@@ -511,7 +608,12 @@ end
 registerForEvent("onInit", function()
     LANG = detectLanguage()
     L = LOCALES[LANG]
+    loadProfiles()
     print(L.loaded)
+    local remembered = Profiles[resolutionKey()]
+    if remembered then
+        print(("[LATENCY] " .. L.profile_hint):format(resolutionKey(), remembered))
+    end
     if CONFIG.applyOnStart then applyLowLatency() end
     if CONFIG.bridge then writeStatus() end   -- heartbeat initial pour l'app
 end)
@@ -565,6 +667,10 @@ registerHotkey("lat_auto", "LATENCY — mode AUTO on/off / toggle auto-tune", fu
     screenMessage(CONFIG.autoTune and L.auto_on or L.auto_off)
 end)
 
+registerHotkey("lat_restore", "LATENCY — restaurer mes réglages / restore my settings", function()
+    restoreSettings()
+end)
+
 registerHotkey("lat_overlay", "LATENCY — afficher/masquer le compteur / toggle meter", function()
     CONFIG.overlay = not CONFIG.overlay
     if not CONFIG.overlay then M.hud = nil end
@@ -596,7 +702,13 @@ return {
     end,
     ApplyLowLatency = applyLowLatency,
     ApplyClarity = applyClarity,
+    Restore = restoreSettings,
     SetAutoTune = setAutoTune,
+    GetProfiles = function()
+        local out = {}
+        for k, v in pairs(Profiles) do out[k] = v end
+        return out
+    end,
     Reset = resetMeter,
     ToggleOverlay = function()
         CONFIG.overlay = not CONFIG.overlay

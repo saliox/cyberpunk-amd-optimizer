@@ -119,6 +119,59 @@ table.insert(SCENARIOS, { name = "robustesse : frametimes nuls/négatifs ignoré
     expect(s.samples == 0, "les deltas non positifs ne doivent pas être comptés")
 end })
 
+-- Restaurer (annuler) + mémoire de profil ---------------------------------
+
+table.insert(SCENARIOS, { name = "restaurer : capture avant, revient aux réglages d'origine", fn = function()
+    loadMod()
+    -- réglages « d'origine » du joueur
+    SIM.settings["/video/display|VSync"] = true
+    SIM.settings["/video/display|MaxFPS"] = 0
+    feedFps(120, 3)
+    MOD.ApplyLowLatency()
+    expect(SIM.settings["/video/display|VSync"] == false, "VSync devrait être coupé après apply")
+    expect(SIM.settings["/video/display|MaxFPS"] == 116, "cap devrait être 116 après apply")
+    -- annuler → retour à l'état d'origine capturé
+    local n = MOD.Restore()
+    expect(n >= 1, "au moins un réglage restauré")
+    expect(SIM.settings["/video/display|VSync"] == true, "VSync d'origine (true) non restauré")
+    expect(SIM.settings["/video/display|MaxFPS"] == 0, "cap d'origine (0) non restauré")
+end })
+
+table.insert(SCENARIOS, { name = "restaurer : capture UNE fois (n'écrase pas l'original)", fn = function()
+    loadMod()
+    SIM.settings["/video/display|VSync"] = true
+    SIM.settings["/video/display|MaxFPS"] = 30
+    feedFps(120, 3)
+    MOD.ApplyLowLatency()   -- capture {true,30}, applique {false,116}
+    MOD.ApplyLowLatency()   -- NE doit PAS recapturer l'état déjà bas-latence
+    MOD.Restore()
+    expect(SIM.settings["/video/display|MaxFPS"] == 30,
+        "restore doit rendre l'original (30), pas un état intermédiaire")
+end })
+
+table.insert(SCENARIOS, { name = "restaurer : rien à annuler → message, aucun crash", fn = function()
+    loadMod()
+    local n = MOD.Restore()
+    expect(n == 0, "aucun réglage appliqué → rien à restaurer")
+    expect(sawMessage("Rien à restaurer") or sawMessage("Nothing to restore"), "message absent")
+end })
+
+table.insert(SCENARIOS, { name = "profil : le cap est mémorisé par résolution et relu", fn = function()
+    loadMod()
+    feedFps(120, 3)
+    MOD.ApplyLowLatency()   -- mémorise 116 pour 1920x1080
+    local prof = MOD.GetProfiles()
+    expect(prof["1920x1080"] == 116, "le profil 1920x1080 devrait mémoriser 116")
+    -- rechargement du mod : le profil revient du disque
+    loadMod()
+    local prof2 = MOD.GetProfiles()
+    expect(prof2["1920x1080"] == 116, "le profil devrait persister sur disque")
+    -- apply sans mesure → réutilise le profil au lieu du repli 60
+    MOD.ApplyLowLatency()
+    expect(SIM.settings["/video/display|MaxFPS"] == 116,
+        "sans mesure, le cap doit venir du profil (116), pas du repli 60")
+end })
+
 -- Mode AUTO + courbe + 0.1% low -------------------------------------------
 
 table.insert(SCENARIOS, { name = "auto : mesure puis applique le cap tout seul après le warmup", fn = function()
@@ -265,6 +318,24 @@ table.insert(SCENARIOS, { name = "pont : l'app active le mode AUTO à distance",
     expect(raw:find('"low01":'), "le statut devrait exposer low01")
 end })
 
+table.insert(SCENARIOS, { name = "pont : l'app peut annuler à distance (restore)", fn = function()
+    loadMod()
+    SIM.settings["/video/display|VSync"] = true
+    SIM.settings["/video/display|MaxFPS"] = 0
+    feedFps(120, 3)
+    MOD.ApplyLowLatency()
+    -- le statut signale que c'est appliqué et annulable
+    MOD.PushStatus()
+    local raw = readJson("bridge_status.json")
+    expect(raw:find('"applied":true'), "le statut devrait exposer applied")
+    expect(raw:find('"restorable":true'), "le statut devrait exposer restorable")
+    -- l'app envoie restore
+    writeJson("bridge_command.json", '{"id":21,"cmd":"restore"}')
+    MOD.PollCommands()
+    expect(SIM.settings["/video/display|VSync"] == true, "restore via le pont n'a pas rétabli VSync")
+    expect(SIM.settings["/video/display|MaxFPS"] == 0, "restore via le pont n'a pas rétabli le cap")
+end })
+
 table.insert(SCENARIOS, { name = "pont : commande malformée ignorée sans crash", fn = function()
     loadMod()
     writeJson("bridge_command.json", '{ pas du json valide')
@@ -274,9 +345,16 @@ table.insert(SCENARIOS, { name = "pont : commande malformée ignorée sans crash
     expect(true, "aucune erreur levée sur commande malformée")
 end })
 
--- ajoute sawLog aux helpers du harness
+-- ajoute sawLog / sawMessage aux helpers du harness
 function sawLog(fragment)
     for _, m in ipairs(SIM.logs) do
+        if m:find(fragment, 1, true) then return true end
+    end
+    return false
+end
+
+function sawMessage(fragment)
+    for _, m in ipairs(SIM.messages) do
         if m:find(fragment, 1, true) then return true end
     end
     return false
