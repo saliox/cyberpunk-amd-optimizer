@@ -1,1 +1,4 @@
 LATENCY-OPTIMIZER-*.zip
+bridge_status.json
+bridge_command.json
+bridge_ack.json

@@ -4,6 +4,7 @@ stubs CET, alimente des frametimes synthétiques et vérifie la mesure et
 l'application des réglages. Chaque scénario tourne dans un runtime frais."""
 import os
 import sys
+import tempfile
 
 from lupa import LuaRuntime
 
@@ -24,6 +25,9 @@ def new_runtime():
 count = new_runtime().eval("#SCENARIOS")
 passed, failed = 0, []
 for i in range(1, count + 1):
+    # dossier de travail frais : les fichiers du pont (bridge_*.json) que le
+    # mod écrit via io restent isolés par scénario
+    os.chdir(tempfile.mkdtemp(prefix="latency-sim-"))
     lua = new_runtime()
     name = lua.eval(f"SCENARIOS[{i}].name")
     ok, err = lua.eval(

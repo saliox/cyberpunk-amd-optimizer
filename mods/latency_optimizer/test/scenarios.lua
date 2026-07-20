@@ -119,6 +119,95 @@ table.insert(SCENARIOS, { name = "robustesse : frametimes nuls/négatifs ignoré
     expect(s.samples == 0, "les deltas non positifs ne doivent pas être comptés")
 end })
 
+-- Pont avec l'app ---------------------------------------------------------
+
+local function readJson(name)
+    local f = io.open(name, "r")
+    if not f then return nil end
+    local raw = f:read("*a"); f:close()
+    return raw
+end
+
+local function writeJson(name, content)
+    local f = io.open(name, "w")
+    f:write(content); f:close()
+end
+
+table.insert(SCENARIOS, { name = "pont : le mod publie un statut live lisible par l'app", fn = function()
+    loadMod()
+    feedFps(120, 3)
+    MOD.PushStatus()   -- force une écriture immédiate
+    local raw = readJson("bridge_status.json")
+    expect(raw, "bridge_status.json devrait exister")
+    expect(raw:find('"mod":"latency_optimizer"'), "champ mod absent")
+    expect(raw:find('"ready":true'), "le statut devrait être prêt après 3 s")
+    expect(raw:find('"suggestedCap":116'), "cap conseillé absent/incorrect dans le statut")
+    expect(raw:match('"fps":([%d%.]+)'), "fps absent du statut")
+end })
+
+table.insert(SCENARIOS, { name = "pont : heartbeat initial dès le chargement", fn = function()
+    loadMod()   -- onInit écrit un premier statut
+    local raw = readJson("bridge_status.json")
+    expect(raw, "un heartbeat initial devrait être écrit au chargement")
+    expect(raw:find('"ready":false'), "sans mesure, ready doit être false")
+end })
+
+table.insert(SCENARIOS, { name = "pont : l'app envoie apply_low_latency → exécuté + accusé", fn = function()
+    loadMod()
+    feedFps(120, 3)
+    writeJson("bridge_command.json", '{"id":42,"cmd":"apply_low_latency"}')
+    MOD.PollCommands()
+    expect(SIM.settings["/video/display|VSync"] == false, "VSync non appliqué via la commande")
+    expect(SIM.settings["/video/display|MaxFPS"] == 116, "cap non appliqué via la commande")
+    local ack = readJson("bridge_ack.json")
+    expect(ack and ack:find('"id":42'), "accusé manquant pour la commande 42")
+    expect(ack:find('"ok":true'), "l'accusé devrait indiquer un succès")
+end })
+
+table.insert(SCENARIOS, { name = "pont : une commande n'est exécutée qu'une fois (déduplication)", fn = function()
+    loadMod()
+    feedFps(120, 3)
+    writeJson("bridge_command.json", '{"id":7,"cmd":"set_cap","cap":90}')
+    MOD.PollCommands()
+    expect(SIM.settings["/video/display|MaxFPS"] == 90, "cap 90 attendu")
+    -- l'app change d'avis mais on relit le MÊME fichier (id 7 déjà consommé)
+    SIM.settings["/video/display|MaxFPS"] = nil
+    MOD.PollCommands()
+    expect(SIM.settings["/video/display|MaxFPS"] == nil,
+        "une commande au même id ne doit pas être ré-exécutée")
+end })
+
+table.insert(SCENARIOS, { name = "pont : cap piloté par l'app (override du conseil)", fn = function()
+    loadMod()
+    feedFps(120, 3)   -- cap conseillé = 116
+    writeJson("bridge_command.json", '{"id":9,"cmd":"apply_low_latency","cap":141}')
+    MOD.PollCommands()
+    expect(SIM.settings["/video/display|MaxFPS"] == 141,
+        "le cap fourni par l'app (141) doit primer sur le conseil (116)")
+end })
+
+table.insert(SCENARIOS, { name = "pont : ping → pong, et set_overlay pilote l'affichage", fn = function()
+    loadMod()
+    writeJson("bridge_command.json", '{"id":1,"cmd":"ping"}')
+    MOD.PollCommands()
+    expect(readJson("bridge_ack.json"):find("pong"), "ping devrait répondre pong")
+    writeJson("bridge_command.json", '{"id":2,"cmd":"set_overlay","value":0}')
+    MOD.PollCommands()
+    feedFps(90, 1)
+    local p = SIM.imgui.push
+    draw()
+    expect(SIM.imgui.push == p, "set_overlay 0 doit couper le dessin")
+end })
+
+table.insert(SCENARIOS, { name = "pont : commande malformée ignorée sans crash", fn = function()
+    loadMod()
+    writeJson("bridge_command.json", '{ pas du json valide')
+    MOD.PollCommands()   -- ne doit pas lever
+    writeJson("bridge_command.json", '{"cmd":"apply_low_latency"}')  -- id manquant
+    MOD.PollCommands()
+    expect(true, "aucune erreur levée sur commande malformée")
+end })
+
 -- ajoute sawLog aux helpers du harness
 function sawLog(fragment)
     for _, m in ipairs(SIM.logs) do

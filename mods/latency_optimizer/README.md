@@ -47,10 +47,19 @@ Console : `LO = GetMod("latency_optimizer")` puis `LO.Help()`, `LO.GetStats()`, 
 - `claritySettings` — flou de mouvement / aberration / grain, coupés par `ApplyClarity()`. **N'affectent pas la latence**, mais réduisent le flou en mouvement (souvent confondu avec de la « réactivité »).
 - `overlay`, `applyOnStart`, `window`, `language`.
 
+## 🔌 Communication avec l'app Cyberpunk AMD Optimizer
+
+Le mod peut **dialoguer avec l'application de bureau** via un pont par fichiers JSON (le seul canal fiable depuis le sandbox CET). L'app affiche alors tes stats de latence en direct et peut piloter le mod depuis son interface.
+
+- Le mod **publie** `bridge_status.json` (~1×/s) : fps, frametime, 1 % low, saccades, cap conseillé + heartbeat.
+- L'app **envoie** des commandes via `bridge_command.json` (`apply_low_latency`, `set_cap`, `apply_clarity`, `reset`, `set_overlay`, `ping`) ; le mod exécute et répond dans `bridge_ack.json`.
+
+La moitié « app » est fournie prête à brancher : **`bridge/latency-bridge.js`** (module Node.js sans dépendance, à importer dans le process principal Electron) + le protocole détaillé dans **`bridge/README.md`**. Les deux moitiés ont été vérifiées ensemble (le JSON réel du mod est parsé par le module Node). Désactivable via `CONFIG.bridge = false`.
+
 ## Perf du mod lui-même
 
 Le mesureur échantillonne chaque frame (arithmétique pure, aucune requête au jeu), mais **ne recalcule et ne redessine qu'à ~4 Hz** ; le HUD se peint depuis un cache (rendu ImGui seulement). Le mod ne coûte donc quasiment rien — il n'ajoute pas la latence qu'il mesure.
 
 ## Tests
 
-`python3 test/run.py` (requiert `pip install lupa`) — **12 scénarios** : exactitude de la mesure (frametime, FPS, 1 % low, saccades), cap conseillé, application des réglages basse latence et netteté, isolation des erreurs du HUD, fenêtre glissante bornée, robustesse aux frametimes invalides.
+`python3 test/run.py` (requiert `pip install lupa`) — **19 scénarios** : exactitude de la mesure (frametime, FPS, 1 % low, saccades), cap conseillé, application des réglages basse latence et netteté, isolation des erreurs du HUD, fenêtre glissante bornée, robustesse aux frametimes invalides, et le **pont avec l'app** (publication du statut, heartbeat initial, exécution des commandes + accusé, déduplication par id, cap piloté par l'app, ping/pong, commandes malformées ignorées). Le module Node `bridge/latency-bridge.js` a en plus été testé en round-trip contre le JSON réel du mod.

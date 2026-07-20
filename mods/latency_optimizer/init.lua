@@ -27,6 +27,10 @@ local CONFIG = {
     overlay    = true,    -- afficher le compteur de latence
     applyOnStart = false, -- appliquer le préréglage basse latence au chargement
 
+    bridge      = true,   -- pont fichier avec l'app « Cyberpunk AMD Optimizer »
+    bridgeWrite = 1.0,    -- écriture du statut (s) — heartbeat + stats live
+    bridgeRead  = 0.5,    -- lecture des commandes venues de l'app (s)
+
     window      = 240,    -- nb de frames analysées (fenêtre glissante)
     refresh     = 0.25,   -- rafraîchissement de l'affichage (s) — la MESURE
                           -- reste par frame ; seul l'affichage est throttlé
@@ -230,9 +234,12 @@ local function applySettings(list, autoCapValue)
     return applied
 end
 
-local function applyLowLatency()
-    local live = computeStats()
-    local cap = live and live.cap or 0
+local function applyLowLatency(capOverride)
+    local cap = capOverride
+    if not cap or cap <= 0 then
+        local live = computeStats()
+        cap = live and live.cap or 0
+    end
     local applied = applySettings(CONFIG.latencySettings, cap)
     if #applied == 0 then
         screenMessage(L.apply_none)
@@ -251,6 +258,119 @@ local function applyClarity()
     screenMessage(msg)
     print("[LATENCY] " .. msg)
     return applied
+end
+
+--------------------------------------------------------------------------
+-- Pont avec l'app « Cyberpunk AMD Optimizer » (IPC par fichiers JSON)
+--------------------------------------------------------------------------
+-- CET sandboxe io au dossier du mod : les deux fichiers vivent dans
+--   <jeu>/bin/x64/plugins/cyber_engine_tweaks/mods/latency_optimizer/
+-- que l'app connaît (elle gère déjà le chemin du jeu). Protocole :
+--   • bridge_status.json  — ÉCRIT par le mod : stats live + heartbeat (ts)
+--   • bridge_command.json — ÉCRIT par l'app  : { id, cmd, cap?, value? }
+--   • bridge_ack.json     — ÉCRIT par le mod : { id, ok, message }
+-- Le mod écrit le statut ~1×/s et lit les commandes ~2×/s (throttlé, pcall).
+
+local STATUS_FILE  = "bridge_status.json"
+local COMMAND_FILE = "bridge_command.json"
+local ACK_FILE     = "bridge_ack.json"
+
+local Bridge = { writeTimer = 0, readTimer = 0, lastCmdId = 0, seq = 0 }
+
+local function nowTs()
+    local ok, t = pcall(os.time)
+    if ok and type(t) == "number" then return t end
+    Bridge.seq = Bridge.seq + 1
+    return Bridge.seq
+end
+
+local function jbool(v) return v and "true" or "false" end
+
+local function writeFile(name, content)
+    return pcall(function()
+        local f = io.open(name, "w")
+        if f then f:write(content); f:close() end
+    end)
+end
+
+local function readFile(name)
+    local content
+    pcall(function()
+        local f = io.open(name, "r")
+        if f then content = f:read("*a"); f:close() end
+    end)
+    return content
+end
+
+-- Écrit le statut live (stats + heartbeat) pour l'app
+local function writeStatus()
+    local d = computeStats()
+    local ready = d ~= nil
+    d = d or { fps = 0, ms = 0, low1 = 0, stutterPct = 0, cap = 0, samples = 0 }
+    local json = string.format(
+        '{"schema":1,"mod":"latency_optimizer","version":"1.0","ts":%d,' ..
+        '"ready":%s,"fps":%.1f,"frametimeMs":%.2f,"low1":%.1f,' ..
+        '"stutterPct":%.1f,"suggestedCap":%d,"samples":%d,"overlay":%s}',
+        nowTs(), jbool(ready), d.fps, d.ms, d.low1,
+        d.stutterPct, d.cap, d.samples, jbool(CONFIG.overlay))
+    writeFile(STATUS_FILE, json)
+end
+
+-- Exécute une commande venue de l'app, renvoie un message d'accusé
+local function runCommand(cmd, cap, value)
+    if cmd == "apply_low_latency" then
+        local applied = applyLowLatency(cap)
+        return true, ("apply_low_latency: %d réglage(s)"):format(#applied)
+    elseif cmd == "apply_clarity" then
+        local applied = applyClarity()
+        return true, ("apply_clarity: %d réglage(s)"):format(#applied)
+    elseif cmd == "set_cap" then
+        local applied = applySettings(CONFIG.latencySettings, cap)
+        return true, ("set_cap: %d → %d réglage(s)"):format(cap or 0, #applied)
+    elseif cmd == "reset" then
+        resetMeter()
+        return true, "reset"
+    elseif cmd == "set_overlay" then
+        CONFIG.overlay = (value ~= 0)
+        if not CONFIG.overlay then M.hud = nil end
+        return true, "set_overlay: " .. tostring(CONFIG.overlay)
+    elseif cmd == "ping" then
+        return true, "pong"
+    end
+    return false, "commande inconnue : " .. tostring(cmd)
+end
+
+-- Lit et consomme une éventuelle commande de l'app (une seule fois par id)
+local function readCommand()
+    local raw = readFile(COMMAND_FILE)
+    if not raw then return end
+    local id = tonumber(raw:match('"id"%s*:%s*(%d+)'))
+    local cmd = raw:match('"cmd"%s*:%s*"([%w_]+)"')
+    if not id or not cmd then return end
+    if id == Bridge.lastCmdId then return end   -- déjà traitée
+    Bridge.lastCmdId = id
+    local cap = tonumber(raw:match('"cap"%s*:%s*(%d+)'))
+    local value = tonumber(raw:match('"value"%s*:%s*(%-?%d+)'))
+    local ok, message = runCommand(cmd, cap, value)
+    writeFile(ACK_FILE, string.format(
+        '{"schema":1,"id":%d,"ok":%s,"message":"%s","ts":%d}',
+        id, jbool(ok), tostring(message):gsub('"', "'"), nowTs()))
+    -- neutralise le fichier de commande pour ne pas la relire au chargement
+    writeFile(COMMAND_FILE, string.format('{"id":%d,"consumed":true}', id))
+end
+
+local function bridgeTick(delta)
+    if not CONFIG.bridge then return end
+    Bridge.writeTimer = Bridge.writeTimer + delta
+    if Bridge.writeTimer >= CONFIG.bridgeWrite then
+        Bridge.writeTimer = 0
+        writeStatus()
+    end
+    Bridge.readTimer = Bridge.readTimer + delta
+    if Bridge.readTimer >= CONFIG.bridgeRead then
+        Bridge.readTimer = 0
+        readCommand()
+    end
 end
 
 --------------------------------------------------------------------------
@@ -321,11 +441,19 @@ registerForEvent("onInit", function()
     L = LOCALES[LANG]
     print(L.loaded)
     if CONFIG.applyOnStart then applyLowLatency() end
+    if CONFIG.bridge then writeStatus() end   -- heartbeat initial pour l'app
 end)
 
--- Mesure chaque frame (pur Lua, négligeable) ; l'affichage est throttlé.
+-- Mesure chaque frame (pur Lua, négligeable) ; l'affichage et le pont vers
+-- l'app sont throttlés (écriture ~1×/s, lecture des commandes ~2×/s).
 registerForEvent("onUpdate", function(delta)
     sample(delta)
+    bridgeTick(delta)
+end)
+
+-- L'app peut aussi être arrêtée proprement : on laisse un dernier statut.
+registerForEvent("onShutdown", function()
+    if CONFIG.bridge then pcall(writeStatus) end
 end)
 
 registerForEvent("onDraw", function()
@@ -378,12 +506,18 @@ return {
         if not CONFIG.overlay then M.hud = nil end
         return CONFIG.overlay
     end,
+    -- Pont avec l'app : forcer une synchro immédiate (l'app peut s'en servir
+    -- au lieu d'attendre le prochain tick throttlé)
+    PushStatus = function() if CONFIG.bridge then writeStatus() end end,
+    PollCommands = function() if CONFIG.bridge then readCommand() end end,
+    SetBridge = function(v) CONFIG.bridge = (v ~= false) end,
     Help = function()
         print("[LATENCY] Optimiseur de latence — commandes :")
         print("  .ApplyLowLatency()  — cap FPS conseillé + VSync off (best-effort)")
         print("  .GetStats()         — { fps, frametimeMs, low1, stutterPct, suggestedCap }")
         print("  .ApplyClarity()     — coupe flou/aberration/grain (netteté, PAS la latence)")
         print("  .Reset()  .ToggleOverlay()")
+        print("  .PushStatus() / .PollCommands() — pont avec l'app AMD Optimizer")
         print("  Le compteur en haut à droite montre ta latence de rendu (ms) en direct.")
     end,
 }
