@@ -47,6 +47,12 @@ La **fin secrète de CODA** (ne rien faire, écouter la berceuse) n'est plus un 
 
 Console : `NS.GetAlignment()` → `{ signal, eddies }`, `NS.GetChoices()` → tes décisions par mission.
 
+## 🤝 Co-op (multijoueur de missions)
+
+Jouez les missions **ensemble** : session partagée, **objectifs de combat d'équipe** (une vague se termine quand *l'équipe* l'a nettoyée) et **choix votés à la majorité**. L'hôte mène, les autres suivent automatiquement la mission lancée.
+
+Comme un mod CET tourne en session solo, c'est la **logique de mission** qui est synchronisée (objectifs, progression, choix), **pas le monde physique** (pour vous voir à l'écran, lancez CyberpunkMP en parallèle). La mise en réseau passe par un **relais** compagnon (`coop/relay.js`, Node.js) — voir **[`coop/README.md`](coop/README.md)** pour la mise en place. Console : `NS.HostCoop()`, `NS.JoinCoop()`, `NS.LeaveCoop()`, `NS.GetCoop()`. Désactivé par défaut : le solo est strictement intact.
+
 ## Structure de campagne
 
 Par défaut (`CONFIG.campaign = true`), les 15 missions **se déverrouillent au fil de la progression** : chaque contrat attend que ses antécédents soient terminés. L'ordre est pensé pour que les missions à choix précèdent toujours leurs retombées (ns07 avant ns12, ns09 avant ns10 et ns14), et **CODA se débloque une fois les trois grands fils bouclés** (ns12, ns13, ns14). Tu peux tout ouvrir avec `CONFIG.campaign = false` ou `NS.SetFreePlay(true)` en console.
@@ -78,4 +84,4 @@ Un moteur générique à **9 types de phases** — `dialogue`, `goto`, `wave`, `
 
 ## Tests
 
-`python3 test/run.py` (requiert `pip install lupa`) — **40 scénarios** (dont 3 d'optimisation : HUD peint depuis le cache avec pile ImGui équilibrée, panne de rendu isolée, logique throttlée qui préserve la complétion malgré des deltas de 60 fps) : les 15 missions en autoplay complet, les choix A/B/marche/fin secrète, **les conséquences croisées entre missions** (reconnaissance du Courtier, révélation de la secte, allègement/durcissement des vagues, assistance de VOLT, fin secrète déblocable/verrouillée, bonus de fidélité), **la campagne** (déverrouillage progressif, journal, bilan final des deux voies), l'échec de course, l'abandon en pleine défense, la perte de session en plein boss, les négatifs (double démarrage, choix hors phase, auto-validation des fins) et la persistance des stats + choix.
+`python3 test/run.py` (requiert `pip install lupa`) — **47 scénarios** (dont 7 de **co-op** : off par défaut, publication de l'hôte, vague qui attend l'équipe, HUD d'équipe, suivi du joiner, choix par vote, quitter ; la fusion réseau du relais `mergePeers` a son propre test Node) et 3 d'optimisation : HUD peint depuis le cache avec pile ImGui équilibrée, panne de rendu isolée, logique throttlée qui préserve la complétion malgré des deltas de 60 fps) : les 15 missions en autoplay complet, les choix A/B/marche/fin secrète, **les conséquences croisées entre missions** (reconnaissance du Courtier, révélation de la secte, allègement/durcissement des vagues, assistance de VOLT, fin secrète déblocable/verrouillée, bonus de fidélité), **la campagne** (déverrouillage progressif, journal, bilan final des deux voies), l'échec de course, l'abandon en pleine défense, la perte de session en plein boss, les négatifs (double démarrage, choix hors phase, auto-validation des fins) et la persistance des stats + choix.

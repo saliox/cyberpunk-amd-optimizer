@@ -33,6 +33,8 @@ local CONFIG = {
                         -- de distance/ennemis à 12 Hz sont invisibles en jeu
                         -- mais divisent par ~5 le coût CPU du mod. N'affecte
                         -- ni le contenu, ni le rendu, ni la qualité.
+    coopSync   = 0.4,   -- cadence de synchro co-op (écriture/lecture du relais)
+    coopStale  = 6.0,   -- un pair sans heartbeat depuis N s est « parti »
     reachDistance = 15.0,
     spawnRadius   = 11.0,
     spawnTimeout  = 20.0,   -- spawn jamais matérialisé => ignoré
@@ -78,6 +80,13 @@ local LOCALES = {
         unknown_mission = "Mission inconnue. NS.List() pour la liste.",
         hud_hostiles  = "Hostiles : %d",
         hud_distance  = "%d m",
+        hud_coop      = "CO-OP %s · %d joueur(s)",
+        coop_hosted   = "Session co-op créée : %s — attends tes potes puis lance une mission.",
+        coop_joined   = "Session co-op rejointe : %s — tu suis l'hôte.",
+        coop_left     = "Session co-op quittée.",
+        coop_relay    = "Rappel : lance le relais (coop/relay.js) pour la synchro réseau.",
+        vote_cast     = "Vote enregistré : %s. En attente de l'équipe…",
+        coop_vote_hint = "CO-OP — votez (Choix A / Choix B). La majorité décide.",
         list_header   = "NIGHT SHIFT — 15 contrats :",
         stats_line    = "%s : %d jouées, %d finies, record %s",
         grid_memory   = "Le réseau se souvient — Signal %d · Marché %d",
@@ -122,6 +131,13 @@ local LOCALES = {
         unknown_mission = "Unknown mission. NS.List() for the list.",
         hud_hostiles  = "Hostiles: %d",
         hud_distance  = "%d m",
+        hud_coop      = "CO-OP %s · %d player(s)",
+        coop_hosted   = "Co-op session created: %s — wait for friends, then start a mission.",
+        coop_joined   = "Co-op session joined: %s — following the host.",
+        coop_left     = "Co-op session left.",
+        coop_relay    = "Reminder: run the relay (coop/relay.js) for network sync.",
+        vote_cast     = "Vote cast: %s. Waiting for the team…",
+        coop_vote_hint = "CO-OP — vote (Choice A / Choice B). Majority decides.",
         list_header   = "NIGHT SHIFT — 15 contracts:",
         stats_line    = "%s: %d played, %d done, best %s",
         grid_memory   = "The grid remembers — Signal %d · Market %d",
@@ -156,6 +172,175 @@ local function detectLanguage()
     if not ok or not value then return "fr" end
     if value:lower():find("fr") then return "fr" end
     return "en"
+end
+
+--------------------------------------------------------------------------
+-- CO-OP : synchronisation de la LOGIQUE de mission entre joueurs
+--------------------------------------------------------------------------
+-- Ce module NE partage PAS le monde physique (personnages, ennemis à
+-- l'écran) — ça, c'est le rôle de CyberpunkMP. Il synchronise la mission :
+-- session partagée, objectifs de combat d'ÉQUIPE (une vague se termine quand
+-- l'équipe l'a nettoyée), et CHOIX votés ensemble.
+--
+-- Transport : le sandbox CET ne peut pas ouvrir de sockets, donc on passe
+-- par des fichiers, relayés sur le réseau par un compagnon (coop/relay.js).
+--   coop_out.json — ce pair ÉCRIT : son état + sa contribution
+--   coop_in.json  — le relais ÉCRIT : l'état d'équipe agrégé (somme des
+--                   « remaining », vote résolu, mission/phase de l'hôte)
+--------------------------------------------------------------------------
+
+local Coop = {
+    role = "off",   -- off | host | join
+    id = nil, code = nil, name = "V",
+    syncTimer = 0,
+    seq = 0,
+    -- état local publié
+    outMission = nil, outPhaseIndex = 0, outPhaseType = "", outObjective = "",
+    outRemaining = 0, outVote = "", outResolved = "",
+    -- état d'équipe reçu (du relais)
+    inb = { peerCount = 1, teamRemaining = 0, mission = nil, phaseIndex = 0,
+            phaseType = "", objective = "", resolved = "", hostTs = 0 },
+}
+
+local COOP_OUT = "coop_out.json"
+local COOP_IN  = "coop_in.json"
+
+local function coopClock()
+    local ok, t = pcall(os.time)
+    if ok and type(t) == "number" then return t end
+    Coop.seq = Coop.seq + 1
+    return Coop.seq
+end
+
+local function coopWriteOut()
+    pcall(function()
+        local json = string.format(
+            '{"schema":1,"id":"%s","role":"%s","code":"%s","ts":%d,' ..
+            '"mission":"%s","phaseIndex":%d,"phaseType":"%s","objective":"%s",' ..
+            '"remaining":%d,"vote":"%s","resolved":"%s"}',
+            tostring(Coop.id), Coop.role, tostring(Coop.code or ""), coopClock(),
+            tostring(Coop.outMission or ""), Coop.outPhaseIndex,
+            Coop.outPhaseType, (Coop.outObjective or ""):gsub('"', "'"),
+            Coop.outRemaining, Coop.outVote or "", Coop.outResolved or "")
+        local f = io.open(COOP_OUT, "w")
+        if f then f:write(json); f:close() end
+    end)
+end
+
+local function coopReadIn()
+    pcall(function()
+        local f = io.open(COOP_IN, "r")
+        if not f then return end
+        local raw = f:read("*a"); f:close()
+        if not raw then return end
+        local function num(key, dflt)
+            return tonumber(raw:match('"' .. key .. '"%s*:%s*(%-?%d+)')) or dflt
+        end
+        local function str(key)
+            return raw:match('"' .. key .. '"%s*:%s*"([^"]*)"') or ""
+        end
+        Coop.inb = {
+            peerCount     = num("peerCount", 1),
+            teamRemaining = num("teamRemaining", 0),
+            mission       = str("mission"),
+            phaseIndex    = num("phaseIndex", 0),
+            phaseType     = str("phaseType"),
+            objective     = str("objective"),
+            resolved      = str("resolved"),
+            hostTs        = num("hostTs", 0),
+        }
+    end)
+end
+
+-- API co-op ---------------------------------------------------------------
+
+function Coop.active() return Coop.role ~= "off" end
+function Coop.isHost() return Coop.role == "host" end
+
+function Coop.host(code, id)
+    Coop.role = "host"
+    Coop.code = code or "NS-COOP"
+    Coop.id = id or ("host-" .. coopClock())
+    Coop.inb.peerCount = 1
+    coopWriteOut()
+    return Coop.code
+end
+
+function Coop.join(code, id)
+    Coop.role = "join"
+    Coop.code = code or "NS-COOP"
+    Coop.id = id or ("join-" .. coopClock())
+    coopReadIn()
+    coopWriteOut()
+    return Coop.code
+end
+
+function Coop.leave()
+    Coop.role = "off"
+    Coop.outMission, Coop.outObjective, Coop.outVote, Coop.outResolved = nil, "", "", ""
+    Coop.outRemaining, Coop.outPhaseIndex = 0, 0
+    pcall(function() local f = io.open(COOP_OUT, "w"); if f then f:write('{"left":true}'); f:close() end end)
+end
+
+-- L'hôte publie la mission/phase courante ; ignoré côté joiner
+function Coop.setMissionPhase(missionId, phaseIndex, phaseType, objective)
+    if Coop.role ~= "host" then return end
+    Coop.outMission = missionId
+    Coop.outPhaseIndex = phaseIndex or 0
+    Coop.outPhaseType = phaseType or ""
+    Coop.outObjective = objective or ""
+end
+
+function Coop.setLocalRemaining(n) Coop.outRemaining = n or 0 end
+function Coop.setVote(key) Coop.outVote = key or "" end
+function Coop.setResolved(key) Coop.outResolved = key or "" end
+
+-- Total d'hostiles restants dans l'équipe (somme relayée) ; nil si co-op off
+function Coop.teamRemaining()
+    if not Coop.active() then return nil end
+    return Coop.inb.teamRemaining or 0
+end
+
+-- La vague est-elle terminée pour l'ÉQUIPE ? (true en solo)
+function Coop.teamClear()
+    if not Coop.active() then return true end
+    return (Coop.inb.teamRemaining or 0) <= 0
+end
+
+-- Cible que l'hôte impose au joiner (mission à suivre)
+function Coop.followTarget()
+    if Coop.role ~= "join" then return nil end
+    if not Coop.inb.mission or Coop.inb.mission == "" then return nil end
+    return { mission = Coop.inb.mission, phaseIndex = Coop.inb.phaseIndex,
+             phaseType = Coop.inb.phaseType, objective = Coop.inb.objective }
+end
+
+-- Choix résolu par le vote (le relais agrège et renvoie « resolved »)
+function Coop.resolvedVote()
+    if not Coop.active() then return nil end
+    local r = Coop.inb.resolved
+    if r == nil or r == "" then return nil end
+    return r
+end
+
+function Coop.peerCount()
+    if not Coop.active() then return 1 end
+    return math.max(1, Coop.inb.peerCount or 1)
+end
+
+function Coop.sync(dt)
+    if not Coop.active() then return end
+    Coop.syncTimer = Coop.syncTimer + (dt or 0)
+    if Coop.syncTimer < CONFIG.coopSync then return end
+    Coop.syncTimer = 0
+    coopWriteOut()
+    coopReadIn()
+end
+
+-- Pour les tests : forcer une synchro immédiate
+function Coop.syncNow()
+    if not Coop.active() then return end
+    coopWriteOut(); coopReadIn()
 end
 
 --------------------------------------------------------------------------
@@ -1109,6 +1294,10 @@ local function resetRun()
     Run.epLines, Run.epEndAt, Run.completionNote = nil, 0, nil
     Run.pollAccum = 0
     Run.hud = nil
+    -- l'hôte cesse de publier une mission (le joiner arrête de suivre)
+    if Coop.isHost() then Coop.setMissionPhase(nil, 0, "", "") end
+    Coop.setLocalRemaining(0)
+    Coop.setVote("")
 end
 
 local function cancelRun(message, restoreClock)
@@ -1254,7 +1443,9 @@ PHASE.wave = {
     update = function(p, delta)
         Run.timer = Run.timer + delta
         local remain = enemiesRemain(delta)
-        if Run.timer > CONFIG.graceTime and not remain then
+        Coop.setLocalRemaining(Run.aliveCount)   -- contribue au total d'équipe
+        -- en co-op, la vague ne se termine que quand l'ÉQUIPE a nettoyé
+        if Run.timer > CONFIG.graceTime and not remain and Coop.teamClear() then
             screenMessage(L.wave_clear)
             advancePhase()
         elseif Run.timer >= CONFIG.waveTimeout then
@@ -1264,6 +1455,8 @@ PHASE.wave = {
         end
     end,
     objective = function(p)
+        local team = Coop.teamRemaining()
+        if team then return T(p.objective), L.hud_hostiles:format(team) end
         return T(p.objective), L.hud_hostiles:format(Run.aliveCount)
     end,
 }
@@ -1355,13 +1548,15 @@ PHASE.boss = {
     update = function(p, delta)
         Run.timer = Run.timer + delta
         local remain = enemiesRemain(delta)
+        Coop.setLocalRemaining(Run.aliveCount)
         if not Run.ps.bossSpawned and Run.timer >= (p.delay or 8) then
             Run.ps.bossSpawned = true
             spawnAt(p.record, Run.ps.center.x + CONFIG.spawnRadius, Run.ps.center.y, Run.ps.center.z)
             screenMessage(T(p.announce))
             playSound("ui_jingle_relic_malfunction")
         end
-        if Run.ps.bossSpawned and Run.timer > (p.delay or 8) + 3.0 and not remain then
+        if Run.ps.bossSpawned and Run.timer > (p.delay or 8) + 3.0
+            and not remain and Coop.teamClear() then
             advancePhase()
         elseif Run.timer >= CONFIG.waveTimeout then
             despawnEnemies()
@@ -1370,6 +1565,8 @@ PHASE.boss = {
         end
     end,
     objective = function(p)
+        local team = Coop.teamRemaining()
+        if team then return T(p.objective), L.hud_hostiles:format(team) end
         return T(p.objective), L.hud_hostiles:format(Run.aliveCount)
     end,
 }
@@ -1481,6 +1678,18 @@ PHASE.choice = {
     end,
     update = function(p, delta)
         playLines(p.lines or {}, delta, 0)
+        -- CO-OP : le choix se résout par VOTE (majorité, arbitré par l'hôte
+        -- via le relais). Dès qu'un choix est résolu, tout le monde l'applique
+        -- ensemble ; pas de choix individuel par déplacement.
+        if Coop.active() then
+            local r = Coop.resolvedVote()
+            if r and p.options[r] then applyChoice(r); return end
+            if Run.step >= #(p.lines or {}) and (Run.timer % 8) < delta then
+                screenMessage(L.coop_vote_hint)
+            end
+            Run.timer = Run.timer + delta
+            return
+        end
         local elapsed = Run.timer
         if Run.ps.startedWall then
             local now = wallClock()
@@ -1523,10 +1732,8 @@ PHASE.choice = {
     objective = function(p) return L.choice_hint, nil end,
 }
 
--- Point unique de résolution d'un choix (hotkey, marche, secret, console) :
--- enregistre le choix persistant, applique les bonus conditionnels, puis
--- lance l'épilogue de l'option.
-function selectChoiceOption(key)
+-- Applique RÉELLEMENT un choix : enregistre, bonus conditionnels, épilogue.
+function applyChoice(key)
     local p = Run.phase
     local opt = p.options[key]
     if not opt then return false end
@@ -1543,6 +1750,20 @@ function selectChoiceOption(key)
     end
     startEpilogue(opt.lines, rewards)
     return true
+end
+
+-- Point d'entrée d'un choix. En SOLO : applique tout de suite. En CO-OP : ce
+-- n'est qu'un VOTE ; la résolution (majorité) vient du relais et déclenche
+-- applyChoice() pour tout le monde en même temps.
+function selectChoiceOption(key)
+    if not Run.phase or not Run.phase.options[key] then return false end
+    if Coop.active() then
+        Coop.setVote(key)
+        Coop.syncNow()
+        screenMessage(L.vote_cast:format(string.upper(key)))
+        return true
+    end
+    return applyChoice(key)
 end
 
 -- Choix par hotkey/console : uniquement pendant une phase choice active
@@ -1578,7 +1799,7 @@ local function findMission(what)
     return nil
 end
 
-local function startMission(what)
+local function startMission(what, force)
     if Run.status == "running" or Run.status == "epilogue" then
         screenMessage(L.already)
         return false
@@ -1588,7 +1809,7 @@ local function startMission(what)
         screenMessage(L.unknown_mission)
         return false
     end
-    if not isUnlocked(mi) then
+    if not force and not isUnlocked(mi) then   -- co-op : le joiner suit l'hôte sans gating
         screenMessage(L.locked)
         playSound("ui_hacking_access_denied")
         return false
@@ -1653,8 +1874,12 @@ local function refreshHud()
             barText = string.format("%d%%", math.floor(barFrac * 100))
         end
     end
+    local coopLine
+    if Coop.active() then
+        coopLine = L.hud_coop:format(Coop.role, Coop.peerCount())
+    end
     Run.hud = { title = T(Run.def.title), objective = objective or "",
-                detail = detail, barFrac = barFrac, barText = barText }
+                detail = detail, barFrac = barFrac, barText = barText, coop = coopLine }
 end
 
 local function renderHud()
@@ -1673,6 +1898,7 @@ local function renderHud()
     ImGui.PushStyleColor(ImGuiCol.PlotHistogram, 0.30, 0.91, 0.96, 0.9)
     if ImGui.Begin("NIGHT_SHIFT_HUD", flags) then
         ImGui.TextColored(0.99, 0.93, 0.04, 1.0, "◤ NIGHT SHIFT — " .. h.title)
+        if h.coop then ImGui.TextColored(0.30, 0.91, 0.96, 1.0, h.coop) end
         ImGui.Separator()
         ImGui.Text(h.objective)
         if h.barFrac then ImGui.ProgressBar(h.barFrac, 280, 16, h.barText) end
@@ -1717,11 +1943,35 @@ registerForEvent("onDraw", function()
     end
 end)
 
+-- Joiner : démarre la mission que l'hôte a lancée (sans gating de campagne)
+local function coopFollow()
+    if Coop.role ~= "join" then return end
+    if Run.status ~= "idle" and Run.status ~= "done" then return end
+    local t = Coop.followTarget()
+    if t and t.mission ~= "" and (not Run.def or Run.def.id ~= t.mission) then
+        startMission(t.mission, true)
+    end
+end
+
+-- Hôte : publie la mission/phase courante pour l'équipe
+local function coopPublish()
+    if Coop.role ~= "host" then return end
+    if Run.status == "running" and Run.phase then
+        local obj = PHASE[Run.phase.type].objective(Run.phase)
+        Coop.setMissionPhase(Run.def.id, Run.pi, Run.phase.type, obj or "")
+    end
+end
+
 -- Logique de mission throttlée : chaque frame n'accumule que le delta ; le
 -- corps (tests de distance, scans d'ennemis, HUD) ne tourne qu'à ~12 Hz,
 -- avec le delta cumulé — invisible en jeu, ~5× moins de travail par seconde.
 registerForEvent("onUpdate", function(delta)
-    if Run.status == "idle" or Run.status == "done" then return end
+    if Coop.active() then Coop.sync(delta) end   -- s'auto-throttle (~0.4 s)
+
+    if Run.status == "idle" or Run.status == "done" then
+        coopFollow()   -- au repos, un joiner peut démarrer la mission de l'hôte
+        return
+    end
     Run.pollAccum = Run.pollAccum + delta
     if Run.pollAccum < CONFIG.pollInterval then return end
     local dt = Run.pollAccum
@@ -1743,6 +1993,7 @@ registerForEvent("onUpdate", function(delta)
     elseif Run.status == "running" and Run.phase then
         PHASE[Run.phase.type].update(Run.phase, dt)
     end
+    coopPublish()         -- l'hôte diffuse l'état à l'équipe
     refreshHud()          -- prépare le payload du HUD pour les frames à venir
 end)
 
@@ -1772,6 +2023,17 @@ registerHotkey("ns_abort", "NIGHT SHIFT — annuler la mission / abort mission",
     cancelRun(L.aborted, true)
 end)
 
+registerHotkey("ns_coop_host", "NIGHT SHIFT — héberger une session co-op / host co-op", function()
+    local code = Coop.host()
+    screenMessage(L.coop_hosted:format(code))
+    screenMessage(L.coop_relay)
+end)
+
+registerHotkey("ns_coop_leave", "NIGHT SHIFT — quitter la session co-op / leave co-op", function()
+    Coop.leave()
+    screenMessage(L.coop_left)
+end)
+
 --------------------------------------------------------------------------
 -- API publique (console + tests)
 --------------------------------------------------------------------------
@@ -1794,13 +2056,23 @@ return {
     GetStatus = function() return Run.status end,
     GetMissionCount = function() return #MISSIONS end,
     GetMissionId = function(i) return MISSIONS[i] and MISSIONS[i].id or nil end,
+    -- Co-op (session partagée : objectifs d'équipe + choix votés)
+    HostCoop = function(code, id) local c = Coop.host(code, id); screenMessage(L.coop_hosted:format(c)); return c end,
+    JoinCoop = function(code, id) local c = Coop.join(code, id); screenMessage(L.coop_joined:format(c)); return c end,
+    LeaveCoop = function() Coop.leave(); screenMessage(L.coop_left) end,
+    CoopSync = function() Coop.syncNow() end,
+    GetCoop = function()
+        return { active = Coop.active(), role = Coop.role, code = Coop.code,
+                 peers = Coop.peerCount(), teamRemaining = Coop.teamRemaining() }
+    end,
     -- Infos de la phase courante (HUD externe, outils, tests)
     GetPhaseInfo = function()
         if Run.status ~= "running" or not Run.phase then
             return { status = Run.status }
         end
         local p = Run.phase
-        local info = { status = Run.status, index = Run.pi, type = p.type }
+        local info = { status = Run.status, index = Run.pi, type = p.type,
+                       mission = Run.def and Run.def.id }
         if p.type == "goto" then info.target = p.pos end
         if p.type == "hold" then info.target = p.pos; info.progress = Run.ps.progress end
         if p.type == "race" then

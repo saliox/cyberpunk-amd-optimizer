@@ -431,3 +431,131 @@ table.insert(SCENARIOS, { name = "sélection : cycle des 15 missions au hotkey",
     expect(NS.GetStatus() == "running", "démarrage via sélection inopérant")
     press("ns_abort")
 end })
+
+-- CO-OP -------------------------------------------------------------------
+-- Le relais réseau est simulé en écrivant coop_in.json (ce que le relais
+-- livrerait) et en lisant coop_out.json (ce que le mod publie).
+
+function writeCoopIn(o)
+    o = o or {}
+    local f = io.open("coop_in.json", "w")
+    f:write(string.format(
+        '{"schema":1,"code":"T","host":"h","peerCount":%d,"mission":"%s",' ..
+        '"phaseIndex":%d,"phaseType":"%s","objective":"%s",' ..
+        '"teamRemaining":%d,"resolved":"%s","hostTs":1}',
+        o.peerCount or 2, o.mission or "", o.phaseIndex or 0, o.phaseType or "",
+        o.objective or "", o.teamRemaining or 0, o.resolved or ""))
+    f:close()
+end
+
+function readCoopOut()
+    local f = io.open("coop_out.json", "r")
+    if not f then return "" end
+    local raw = f:read("*a"); f:close()
+    return raw or ""
+end
+
+function coopDriveToType(ptype)
+    local guard = 0
+    while NS.GetStatus() == "running" and NS.GetPhaseInfo().type ~= ptype do
+        guard = guard + 1
+        expect(guard < 20000, "drive co-op bloque (" .. tostring(NS.GetPhaseInfo().type) .. ")")
+        local info = NS.GetPhaseInfo()
+        local t = info.type
+        if t == "goto" or t == "race" or t == "collect" then
+            if info.target then teleport(info.target) end
+            tick(0.2)
+        elseif t == "hold" then
+            if info.target then teleport(info.target) end
+            tick(0.5); killAll()
+        elseif t == "wave" or t == "boss" or t == "defend" then
+            tick(0.5); killAll()
+        else
+            tick(0.5)
+        end
+    end
+end
+
+table.insert(SCENARIOS, { name = "co-op : off par defaut -> aucune synchro (solo intact)", fn = function()
+    NS = loadMod()
+    local c = NS.GetCoop()
+    expect(not c.active, "le co-op doit etre off par defaut")
+    expect(c.teamRemaining == nil, "teamRemaining doit etre nil en solo")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : l'hote publie mission/phase dans coop_out", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(6)
+    coopDriveToType("wave")
+    NS.CoopSync()
+    local raw = readCoopOut()
+    expect(raw:find('"role":"host"'), "coop_out devrait indiquer le role hote")
+    expect(raw:find('"mission":"ns06"'), "coop_out devrait publier la mission courante")
+    expect(raw:find('"phaseType":"wave"'), "coop_out devrait publier le type de phase")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : une vague attend que l'EQUIPE ait nettoye", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(6)
+    coopDriveToType("wave")
+    local idxBefore = NS.GetPhaseInfo().index
+    writeCoopIn({ teamRemaining = 3, mission = "ns06" })
+    NS.CoopSync()
+    killAll()
+    tickFor(3, 0.5)
+    expect(NS.GetPhaseInfo().index == idxBefore,
+        "la vague ne doit PAS avancer tant que l'equipe n'a pas nettoye")
+    writeCoopIn({ teamRemaining = 0, mission = "ns06" })
+    NS.CoopSync()
+    tickFor(1, 0.5)
+    expect(NS.GetPhaseInfo().index > idxBefore or NS.GetStatus() ~= "running",
+        "la vague doit avancer une fois l'equipe au complet")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : le HUD d'equipe se dessine (pile ImGui equilibree)", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(6)
+    coopDriveToType("wave")
+    writeCoopIn({ teamRemaining = 5, mission = "ns06" })
+    NS.CoopSync()
+    tick(0.1)
+    draw()
+    expect((SIM.imgui.push or 0) > 0, "le HUD co-op aurait du se dessiner")
+    expect(SIM.imgui.push == SIM.imgui.pop, "pile ImGui desequilibree en co-op")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : le joiner suit la mission lancee par l'hote", fn = function()
+    NS = loadMod()
+    NS.JoinCoop("T", "j")
+    writeCoopIn({ mission = "ns01" })
+    NS.CoopSync()
+    tick(0.1)
+    expect(NS.GetStatus() == "running", "le joiner aurait du demarrer la mission")
+    expect(NS.GetPhaseInfo().mission == "ns01", "le joiner doit suivre ns01")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : le choix se resout par VOTE", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(9)
+    coopDriveToType("choice")
+    press("ns_choice_a")
+    expect(NS.GetStatus() == "running", "un vote ne doit pas conclure immediatement")
+    expect(sawMessage("Vote"), "le message de vote est absent")
+    expect(readCoopOut():find('"vote":"a"'), "le vote devrait etre publie dans coop_out")
+    writeCoopIn({ mission = "ns09", resolved = "a" })
+    NS.CoopSync()
+    tickFor(2, 0.5)
+    expect(NS.GetChoices()["ns09"] == "a", "le choix resolu par vote doit etre applique")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : quitter la session retablit le solo", fn = function()
+    NS = loadMod()
+    NS.HostCoop("T", "h")
+    expect(NS.GetCoop().active, "la session devrait etre active")
+    NS.LeaveCoop()
+    expect(not NS.GetCoop().active, "quitter doit desactiver le co-op")
+end })

@@ -11,8 +11,9 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
 DEST="$STAGE/bin/x64/plugins/cyber_engine_tweaks/mods/night_shift"
-mkdir -p "$DEST"
+mkdir -p "$DEST/coop"
 cp init.lua README.md "$DEST/"
+cp coop/relay.js coop/README.md "$DEST/coop/"
 
 OUT="$PWD/NIGHT-SHIFT-$VERSION.zip"
 rm -f "$OUT"
