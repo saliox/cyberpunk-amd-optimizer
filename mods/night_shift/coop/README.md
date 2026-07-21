@@ -55,3 +55,9 @@ En jeu : console `NS.JoinCoop()`. Le joiner **démarre automatiquement** la miss
 - Toutes les I/O du mod sont en `pcall` : un fichier verrouillé ne fait jamais tomber le mod, et le co-op inactif ne coûte rien (solo strictement intact — 40 tests de non-régression le prouvent).
 - Le relais ignore un pair sans heartbeat depuis 6 s (déconnexion) et recalcule l'équipe.
 - La logique de fusion du relais (`mergePeers`) est pure et testée ; la logique co-op du mod est couverte par 7 scénarios de simulation.
+
+## Validation réseau réelle
+
+`node test-relay.js` lance le **vrai relais** (hôte + 2 clients, processus séparés) qui dialoguent par de **vraies sockets TCP** sur `127.0.0.1`, chacun avec son dossier et ses fichiers `coop_*.json` comme en jeu. Vérifié end-to-end : connexion, **somme des hostiles d'équipe** propagée à tous, mission/phase de l'hôte diffusées, **résolution des votes à la majorité**, et **déconnexion** (un pair tué sort de l'équipe au heartbeat périmé). Latence de propagation mesurée : **~130 ms sur localhost** (bornée par le poll de 200 ms du relais + le sync ~0,4 s du mod en jeu → état d'équipe synchronisé en **moins d'une seconde**, largement suffisant pour de la logique de mission).
+
+> Non couvert par ce test : le pare-feu / NAT d'un **vrai réseau distant** (c'est de la config réseau, pas du code — LAN direct, redirection de port, ou VPN type Radmin/Hamachi), et le jeu lui-même.
