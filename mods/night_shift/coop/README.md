@@ -27,17 +27,30 @@ Sur chaque machine, le mod NIGHT SHIFT doit être installé. Puis **le relais** 
 
 **L'hôte** (celui qui mène) :
 ```
-node relay.js --host --port 7777 --dir "<jeu>/bin/x64/plugins/cyber_engine_tweaks/mods/night_shift"
+node relay.js --host --port 7777 --token <code> --dir "<jeu>/bin/x64/plugins/cyber_engine_tweaks/mods/night_shift"
 ```
-En jeu : touche **« héberger une session co-op »** (ou console `NS = GetMod("night_shift"); NS.HostCoop()`), puis lance une mission normalement.
+Si tu omets `--token`, le relais **génère un code et l'affiche** : partage-le à tes amis (c'est le mot de passe de la session). En jeu : touche **« héberger une session co-op »** (ou console `NS = GetMod("night_shift"); NS.HostCoop()`), puis lance une mission.
 
 **Les amis** (rejoignent) :
 ```
-node relay.js --join <ip-de-l-hote> --port 7777 --dir "<…>/mods/night_shift"
+node relay.js --join <ip-de-l-hote> --port 7777 --token <code> --dir "<…>/mods/night_shift"
 ```
 En jeu : console `NS.JoinCoop()`. Le joiner **démarre automatiquement** la mission que l'hôte a lancée et le suit.
 
 > Réseau : l'hôte doit être joignable sur le port choisi (LAN direct, ou redirection de port / VPN type Radmin/Hamachi pour jouer par Internet).
+
+## Sécurité du serveur
+
+Le relais hôte est un serveur TCP qui peut être exposé à Internet (redirection de port) — il est donc durci contre les connexions hostiles :
+
+- 🔑 **Authentification par jeton partagé** : sans le bon `--token`, la connexion est fermée. Comparaison à temps constant (anti timing-attack). Jamais de serveur ouvert : sans jeton fourni, il en génère un et l'affiche.
+- 🛡️ **Pas d'usurpation d'hôte** : un pair distant est **toujours** forcé au rôle « join ». Seul le fichier local de la machine hôte fait autorité sur la mission/phase — un intrus ne peut pas détourner la partie.
+- 🧹 **Toutes les entrées réseau sont validées et bornées** avant usage : nombres plafonnés (pas de `teamRemaining` géant), chaînes nettoyées (guillemets/accolades/contrôles retirés → aucune injection dans `coop_in.json`) et tronquées.
+- 🚦 **Anti-DoS** : limite de connexions simultanées (`--max-clients`, 8 par défaut), limite de débit par connexion, plafond de taille de tampon et de message, timeout d'inactivité, et fenêtre de handshake courte. Un pair déconnecté sort de l'équipe au heartbeat périmé.
+- 🔒 **Défense en profondeur côté mod** : le mod ignore un `coop_in.json` anormalement gros.
+- 🌐 **Bonnes pratiques** : n'ouvre le port que le temps de la session, préfère un VPN (Radmin/Hamachi/Tailscale) à une redirection de port publique, et ne partage le jeton qu'avec tes coéquipiers. Choisis un `--token` long si tu exposes le port publiquement.
+
+Validé par `node test-security.js` (bornage, anti-usurpation, jeton) et par `test-relay.js` (rejet d'un intrus au mauvais jeton, en conditions réseau réelles).
 
 ## En jeu
 

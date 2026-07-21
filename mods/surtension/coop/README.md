@@ -21,13 +21,13 @@ Le mod SURTENSION installé sur chaque machine, plus le **relais** (Node.js) :
 
 **Hôte** :
 ```
-node relay.js --host --port 7777 --dir "<jeu>/bin/x64/plugins/cyber_engine_tweaks/mods/surtension"
+node relay.js --host --port 7777 --token <code> --dir "<jeu>/bin/x64/plugins/cyber_engine_tweaks/mods/surtension"
 ```
-En jeu : touche **« héberger une session co-op »** (ou `GetMod("surtension").HostCoop()`), puis lance la mission.
+Sans `--token`, le relais génère un code et l'affiche : partage-le à tes amis (mot de passe de la session). En jeu : touche **« héberger une session co-op »** (ou `GetMod("surtension").HostCoop()`), puis lance la mission.
 
 **Amis** :
 ```
-node relay.js --join <ip-hote> --port 7777 --dir "<…>/mods/surtension"
+node relay.js --join <ip-hote> --port 7777 --token <code> --dir "<…>/mods/surtension"
 ```
 En jeu : `GetMod("surtension").JoinCoop()` → SURTENSION démarre automatiquement quand l'hôte la lance.
 
@@ -41,3 +41,15 @@ En jeu : `GetMod("surtension").JoinCoop()` → SURTENSION démarre automatiqueme
 - `LeaveCoop()` rétablit le solo.
 
 Le relais (`relay.js`) est identique à celui de NIGHT SHIFT : sa logique de fusion (`mergePeers`) est pure et testée. Co-op désactivé par défaut : le solo est strictement intact (15 tests de non-régression).
+
+## Sécurité du serveur
+
+Le relais hôte est un serveur TCP durci (il peut être exposé à Internet) :
+
+- 🔑 **Authentification par jeton** (`--token`) à temps constant ; jamais de serveur ouvert (jeton auto-généré et affiché si absent).
+- 🛡️ **Pas d'usurpation d'hôte** : un pair distant est toujours forcé au rôle « join ».
+- 🧹 **Entrées réseau validées et bornées** (nombres plafonnés, chaînes nettoyées → pas d'injection).
+- 🚦 **Anti-DoS** : limites de connexions / débit / taille / timeouts ; pair déconnecté purgé.
+- 🌐 Ouvre le port seulement le temps de la session, préfère un VPN à une redirection publique.
+
+Validé par `node test-security.js` et `node test-relay.js` (rejet d'un intrus au mauvais jeton en réseau réel).

@@ -20,7 +20,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 const RELAY = path.join(__dirname, 'relay.js');
-const PORT = 7799;
+const PORT = 7801;
 const TOKEN = 'testsecret';
 const procs = [];
 let failures = 0;

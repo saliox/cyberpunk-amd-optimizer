@@ -231,6 +231,8 @@ local function coopReadIn()
     pcall(function()
         local f = io.open(COOP_IN, "r")
         if not f then return end
+        local size = f:seek("end"); f:seek("set", 0)   -- garde-fou : fichier anormal ignoré
+        if size > 16384 then f:close(); return end
         local raw = f:read("*a"); f:close()
         if not raw then return end
         local function num(key, dflt)
