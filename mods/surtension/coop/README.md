@@ -36,11 +36,12 @@ En jeu : `GetMod("surtension").JoinCoop()` → SURTENSION démarre automatiqueme
 ## En jeu
 
 - HUD : `CO-OP hôte/join · N joueurs` + compteur d'hostiles **d'équipe**.
+- **Avertissement de latence discret** : au-delà de `pingWarnMs` (120 ms par défaut), une ligne orange `⚠ Latence — Hôte 0 ms · Joueur X ms` apparaît sous le HUD. L'hôte voit le **pire ping** connecté, chaque joiner voit **sa** latence vers l'hôte. Invisible tant que le ping est bon. Ping mesuré par ping/pong horodaté (RTT réel) chaque seconde côté relais.
 - **Vague 1 et boss GRIDLOCK** ne se terminent que quand toute l'équipe a nettoyé.
 - La **finale** : ☀ LUMIÈRE / 🌑 NOIR deviennent des **votes** ; la majorité décide, l'hôte tranche les égalités, tout le monde bascule sur la même fin.
 - `LeaveCoop()` rétablit le solo.
 
-Le relais (`relay.js`) est identique à celui de NIGHT SHIFT : sa logique de fusion (`mergePeers`) est pure et testée. Co-op désactivé par défaut : le solo est strictement intact (15 tests de non-régression).
+Le relais (`relay.js`) est identique à celui de NIGHT SHIFT : sa logique de fusion (`mergePeers`) est pure et testée, et il mesure le ping (ping/pong horodaté) pour l'avertissement de latence. Co-op désactivé par défaut : le solo est strictement intact (15 tests de non-régression).
 
 ## Sécurité du serveur
 

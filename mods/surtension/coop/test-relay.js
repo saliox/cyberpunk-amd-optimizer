@@ -114,6 +114,21 @@ async function main() {
   console.log('  INFO  latence de propagation relais hôte->client : ~' + propMs + ' ms (localhost)');
   ok(propMs < 1500, 'propagation sous 1,5 s (attendu : borné par le poll 200 ms du relais)');
 
+  // 1c) mesure du ping : le relais horodate un ping/pong et écrit selfPingMs
+  //     (RTT du pair vers l'hôte, 0 pour l'hôte) + worstPingMs (pire joueur).
+  await waitFor(() => { const s = readIn(c1); return s && typeof s.selfPingMs === 'number'; },
+    5000, 'champ de ping écrit côté client');
+  const hp = readIn(hostDir), cp = readIn(c1);
+  ok(typeof hp.selfPingMs === 'number' && typeof hp.worstPingMs === 'number',
+    'coop_in de l\'hôte contient selfPingMs + worstPingMs');
+  ok(hp.selfPingMs === 0, 'ping de l\'hôte vers lui-même = 0 (il est le serveur)');
+  ok(typeof cp.selfPingMs === 'number' && cp.selfPingMs >= 0 && cp.selfPingMs < 60000,
+    'ping du client mesuré et borné (RTT vers l\'hôte)');
+  ok(typeof cp.worstPingMs === 'number' && cp.worstPingMs >= 0,
+    'worstPingMs propagé au client');
+  console.log('  INFO  ping mesuré (localhost) : hôte ' + hp.worstPingMs +
+    ' ms (pire joueur) · client ' + cp.selfPingMs + ' ms');
+
   // 2) l'équipe nettoie : chacun met remaining à 0 -> teamRemaining converge à 0
   writeOut(hostDir, { id: 'host', role: 'host', code: 'ABCD', mission: 'ns06',
     phaseIndex: 2, phaseType: 'wave', remaining: 0, vote: '', resolved: '' });

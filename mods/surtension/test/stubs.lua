@@ -24,7 +24,7 @@ SIM = {
     inventory = {},
     vehicles = {},
     exp = {},
-    imgui = { push = 0, pop = 0, beginN = 0, endN = 0, progressThrows = false },
+    imgui = { push = 0, pop = 0, beginN = 0, endN = 0, progressThrows = false, texts = {} },
     languageValue = "fr-fr",
 }
 
@@ -172,8 +172,13 @@ ImGui = {
     PopStyleColor = function(n) SIM.imgui.pop = SIM.imgui.pop + (n or 1) end,
     Begin = function(...) SIM.imgui.beginN = SIM.imgui.beginN + 1; return true end,
     End = function() SIM.imgui.endN = SIM.imgui.endN + 1 end,
-    TextColored = function(...) end,
-    Text = function(...) end,
+    TextColored = function(...)
+        local a = { ... }; local s = a[#a]
+        if type(s) == "string" then SIM.imgui.texts[#SIM.imgui.texts + 1] = s end
+    end,
+    Text = function(s)
+        if type(s) == "string" then SIM.imgui.texts[#SIM.imgui.texts + 1] = s end
+    end,
     Separator = function() end,
     ProgressBar = function(...)
         if SIM.imgui.progressThrows then error("bad ProgressBar binding") end
@@ -226,7 +231,16 @@ function tickFor(seconds, dt)
 end
 
 function draw()
+    SIM.imgui.texts = {}          -- ne garde que le texte du dessin courant
     if EVENTS.onDraw then EVENTS.onDraw() end
+end
+
+-- vrai si le HUD vient de dessiner un texte contenant `fragment`
+function sawHudText(fragment)
+    for _, s in ipairs(SIM.imgui.texts) do
+        if s:find(fragment, 1, true) then return true end
+    end
+    return false
 end
 
 function press(id)

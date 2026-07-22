@@ -55,6 +55,7 @@ Validé par `node test-security.js` (bornage, anti-usurpation, jeton) et par `te
 ## En jeu
 
 - Le HUD affiche `CO-OP hôte/join · N joueur(s)` et le **compteur d'hostiles d'équipe**.
+- **Avertissement de latence discret** : si le ping dépasse `pingWarnMs` (120 ms par défaut, réglable dans `CONFIG`), une ligne orange apparaît sous le HUD — `⚠ Latence — Hôte 0 ms · Joueur X ms`. L'hôte y voit le **pire ping** des joueurs connectés ; chaque joiner y voit **sa** latence vers l'hôte. Rien ne s'affiche tant que le ping reste correct. Le relais mesure le ping par un ping/pong horodaté chaque seconde (RTT réel).
 - Les **vagues et boss** ne se terminent que quand **toute l'équipe** a nettoyé sa part — chacun contribue.
 - Les **choix** (Choix A / Choix B) sont des **votes** : la majorité décide, l'hôte tranche les égalités, et tout le monde bascule sur la même fin en même temps.
 - `NS.LeaveCoop()` (ou la touche dédiée) quitte la session et rétablit le solo.
@@ -67,10 +68,10 @@ Validé par `node test-security.js` (bornage, anti-usurpation, jeton) et par `te
 
 - Toutes les I/O du mod sont en `pcall` : un fichier verrouillé ne fait jamais tomber le mod, et le co-op inactif ne coûte rien (solo strictement intact — 40 tests de non-régression le prouvent).
 - Le relais ignore un pair sans heartbeat depuis 6 s (déconnexion) et recalcule l'équipe.
-- La logique de fusion du relais (`mergePeers`) est pure et testée ; la logique co-op du mod est couverte par 7 scénarios de simulation.
+- La logique de fusion du relais (`mergePeers`) est pure et testée ; la logique co-op du mod (dont l'avertissement de latence) est couverte par 11 scénarios de simulation.
 
 ## Validation réseau réelle
 
-`node test-relay.js` lance le **vrai relais** (hôte + 2 clients, processus séparés) qui dialoguent par de **vraies sockets TCP** sur `127.0.0.1`, chacun avec son dossier et ses fichiers `coop_*.json` comme en jeu. Vérifié end-to-end : connexion, **somme des hostiles d'équipe** propagée à tous, mission/phase de l'hôte diffusées, **résolution des votes à la majorité**, et **déconnexion** (un pair tué sort de l'équipe au heartbeat périmé). Latence de propagation mesurée : **~130 ms sur localhost** (bornée par le poll de 200 ms du relais + le sync ~0,4 s du mod en jeu → état d'équipe synchronisé en **moins d'une seconde**, largement suffisant pour de la logique de mission).
+`node test-relay.js` lance le **vrai relais** (hôte + 2 clients, processus séparés) qui dialoguent par de **vraies sockets TCP** sur `127.0.0.1`, chacun avec son dossier et ses fichiers `coop_*.json` comme en jeu. Vérifié end-to-end : connexion, **somme des hostiles d'équipe** propagée à tous, mission/phase de l'hôte diffusées, **résolution des votes à la majorité**, **mesure du ping** (ping/pong horodaté → `selfPingMs`/`worstPingMs` écrits dans `coop_in.json`), et **déconnexion** (un pair tué sort de l'équipe au heartbeat périmé). Latence de propagation mesurée : **~130 ms sur localhost** (bornée par le poll de 200 ms du relais + le sync ~0,4 s du mod en jeu → état d'équipe synchronisé en **moins d'une seconde**, largement suffisant pour de la logique de mission).
 
 > Non couvert par ce test : le pare-feu / NAT d'un **vrai réseau distant** (c'est de la config réseau, pas du code — LAN direct, redirection de port, ou VPN type Radmin/Hamachi), et le jeu lui-même.

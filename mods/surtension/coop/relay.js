@@ -179,10 +179,25 @@ if (opt.mode === 'host') {
   const clients = new Set();
   function recompute() {
     const merged = mergePeers(peers, now());
-    writeIn(merged);       // pour le joueur local (l'hôte)
-    const line = JSON.stringify({ type: 'in', state: merged }) + '\n';
-    for (const c of clients) { try { c.write(line); } catch (_) {} }
+    // ping le plus mauvais parmi les joueurs connectés (ce que voit l'hôte)
+    let worst = 0;
+    for (const c of clients) { if ((c._rtt || 0) > worst) worst = c._rtt; }
+    merged.worstPingMs = worst;
+    // l'hôte est le serveur : son ping vers la logique autoritaire = 0
+    writeIn(Object.assign({}, merged, { selfPingMs: 0 }));
+    // chaque client reçoit SON propre ping (son RTT vers l'hôte)
+    for (const c of clients) {
+      const line = JSON.stringify({ type: 'in',
+        state: Object.assign({}, merged, { selfPingMs: c._rtt || 0 }) }) + '\n';
+      try { c.write(line); } catch (_) {}
+    }
   }
+  // mesure du ping : on envoie un ping horodaté à chaque client toutes les
+  // secondes ; il renvoie un pong avec le même horodatage -> RTT = maintenant - t
+  setInterval(() => {
+    const t = now();
+    for (const c of clients) { try { c.write(JSON.stringify({ type: 'ping', t }) + '\n'); } catch (_) {} }
+  }, 1000);
   // l'état local de l'hôte (fichier de confiance, mais borné quand même)
   setInterval(() => {
     const o = readOut();
@@ -236,6 +251,11 @@ if (opt.mode === 'host') {
         if (msg.peer) { const p = sanitizePeer(msg.peer, 'join'); if (p) { p.ts = now(); peers[peerKey] = p; recompute(); } }
         return;
       }
+      if (msg.type === 'pong') {   // réponse à notre ping -> RTT mesuré
+        sock._rtt = sInt(now() - Number(msg.t), 0, 60000, 0);
+        if (peers[peerKey]) peers[peerKey].pingMs = sock._rtt;
+        return;
+      }
       if (msg.type === 'out' && msg.peer) {
         const p = sanitizePeer(msg.peer, 'join');   // rôle distant TOUJOURS join
         if (p) { p.ts = now(); peers[peerKey] = p; recompute(); }
@@ -275,7 +295,12 @@ if (opt.mode === 'host') {
     while ((nl = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
       if (line.length > MAX_MSG) continue;
-      try { const msg = JSON.parse(line); if (msg && msg.type === 'in') writeIn(msg.state); } catch (_) {}
+      try {
+        const msg = JSON.parse(line);
+        if (!msg) continue;
+        if (msg.type === 'ping') { try { sock.write(JSON.stringify({ type: 'pong', t: msg.t }) + '\n'); } catch (_) {} }
+        else if (msg.type === 'in') writeIn(msg.state);
+      } catch (_) {}
     }
   });
   sock.on('timeout', () => { console.error('[relay] hôte muet — fermeture'); try { sock.destroy(); } catch (_) {} });

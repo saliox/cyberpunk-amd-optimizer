@@ -442,9 +442,11 @@ function writeCoopIn(o)
     f:write(string.format(
         '{"schema":1,"code":"T","host":"h","peerCount":%d,"mission":"%s",' ..
         '"phaseIndex":%d,"phaseType":"%s","objective":"%s",' ..
-        '"teamRemaining":%d,"resolved":"%s","hostTs":1}',
+        '"teamRemaining":%d,"resolved":"%s","hostTs":1,' ..
+        '"selfPingMs":%d,"worstPingMs":%d}',
         o.peerCount or 2, o.mission or "", o.phaseIndex or 0, o.phaseType or "",
-        o.objective or "", o.teamRemaining or 0, o.resolved or ""))
+        o.objective or "", o.teamRemaining or 0, o.resolved or "",
+        o.selfPingMs or 0, o.worstPingMs or 0))
     f:close()
 end
 
@@ -550,6 +552,54 @@ table.insert(SCENARIOS, { name = "co-op : le choix se resout par VOTE", fn = fun
     NS.CoopSync()
     tickFor(2, 0.5)
     expect(NS.GetChoices()["ns09"] == "a", "le choix resolu par vote doit etre applique")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : ping eleve -> avertissement discret de latence a l'ecran", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(6)
+    coopDriveToType("wave")
+    -- l'hote voit le PIRE ping des joueurs connectes : 180 ms > seuil (120)
+    writeCoopIn({ teamRemaining = 3, mission = "ns06", worstPingMs = 180, selfPingMs = 0 })
+    NS.CoopSync()
+    tick(0.1)
+    draw()
+    expect(sawHudText("180"), "l'avertissement de latence devrait afficher le ping du joueur")
+    expect(sawHudText("Latence") or sawHudText("Latency"),
+        "l'avertissement de latence devrait apparaitre au-dela du seuil")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : ping correct -> aucun avertissement (discret)", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(6)
+    coopDriveToType("wave")
+    writeCoopIn({ teamRemaining = 3, mission = "ns06", worstPingMs = 40, selfPingMs = 0 })
+    NS.CoopSync()
+    tick(0.1)
+    draw()
+    expect(not sawHudText("Latence") and not sawHudText("Latency"),
+        "aucun avertissement ne doit s'afficher quand le ping est bon")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : le joiner voit SA latence vers l'hote", fn = function()
+    NS = loadMod()
+    NS.JoinCoop("T", "j")
+    writeCoopIn({ mission = "ns01", selfPingMs = 200, worstPingMs = 200 })
+    NS.CoopSync()
+    tickFor(1, 0.1)              -- démarrage (suivi de l'hôte) puis refresh du HUD
+    expect(NS.GetStatus() == "running", "le joiner aurait du demarrer la mission")
+    draw()
+    expect(sawHudText("200"), "le joiner devrait voir sa propre latence (selfPingMs)")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : pas d'avertissement de ping en solo", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.Start(6)
+    tick(0.1)
+    draw()
+    expect(not sawHudText("Latence") and not sawHudText("Latency"),
+        "le solo ne doit jamais afficher d'avertissement de latence")
 end })
 
 table.insert(SCENARIOS, { name = "co-op : quitter la session retablit le solo", fn = function()

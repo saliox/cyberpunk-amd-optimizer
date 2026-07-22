@@ -270,9 +270,11 @@ function writeCoopIn(o)
     f:write(string.format(
         '{"schema":1,"code":"T","host":"h","peerCount":%d,"mission":"%s",' ..
         '"phaseIndex":%d,"phaseType":"%s","objective":"%s",' ..
-        '"teamRemaining":%d,"resolved":"%s","hostTs":1}',
+        '"teamRemaining":%d,"resolved":"%s","hostTs":1,' ..
+        '"selfPingMs":%d,"worstPingMs":%d}',
         o.peerCount or 2, o.mission or "", o.phaseIndex or 0, o.phaseType or "",
-        o.objective or "", o.teamRemaining or 0, o.resolved or ""))
+        o.objective or "", o.teamRemaining or 0, o.resolved or "",
+        o.selfPingMs or 0, o.worstPingMs or 0))
     f:close()
 end
 
@@ -350,6 +352,43 @@ table.insert(SCENARIOS, { name = "co-op : le joiner suit la mission de l'hote", 
     MOD.CoopSync()
     tick(0.1)
     expect(MOD.GetPhase() ~= "idle", "le joiner aurait du demarrer la mission")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : ping eleve -> avertissement discret de latence", fn = function()
+    loadMod()
+    MOD.HostCoop("T", "h")
+    MOD.Start()
+    toWave1()
+    writeCoopIn({ teamRemaining = 3, mission = "surtension", worstPingMs = 200, selfPingMs = 0 })
+    MOD.CoopSync()
+    tick(0.1)
+    draw()
+    expect(sawHudText("200"), "l'avertissement devrait afficher le ping du joueur")
+    expect(sawHudText("Latence") or sawHudText("Latency"),
+        "l'avertissement de latence devrait apparaitre au-dela du seuil")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : ping correct -> aucun avertissement", fn = function()
+    loadMod()
+    MOD.HostCoop("T", "h")
+    MOD.Start()
+    toWave1()
+    writeCoopIn({ teamRemaining = 3, mission = "surtension", worstPingMs = 35, selfPingMs = 0 })
+    MOD.CoopSync()
+    tick(0.1)
+    draw()
+    expect(not sawHudText("Latence") and not sawHudText("Latency"),
+        "aucun avertissement quand le ping est bon")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : pas d'avertissement de ping en solo", fn = function()
+    loadMod()
+    MOD.Start()
+    toWave1()
+    tick(0.1)
+    draw()
+    expect(not sawHudText("Latence") and not sawHudText("Latency"),
+        "le solo ne doit jamais afficher d'avertissement de latence")
 end })
 
 table.insert(SCENARIOS, { name = "co-op : quitter retablit le solo", fn = function()

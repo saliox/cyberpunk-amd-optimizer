@@ -35,6 +35,7 @@ local CONFIG = {
                         -- ni le contenu, ni le rendu, ni la qualité.
     coopSync   = 0.4,   -- cadence de synchro co-op (écriture/lecture du relais)
     coopStale  = 6.0,   -- un pair sans heartbeat depuis N s est « parti »
+    pingWarnMs = 120,   -- au-delà, un avertissement discret de latence s'affiche
     reachDistance = 15.0,
     spawnRadius   = 11.0,
     spawnTimeout  = 20.0,   -- spawn jamais matérialisé => ignoré
@@ -81,6 +82,7 @@ local LOCALES = {
         hud_hostiles  = "Hostiles : %d",
         hud_distance  = "%d m",
         hud_coop      = "CO-OP %s · %d joueur(s)",
+        hud_ping_warn = "⚠ Latence — Hôte %d ms · Joueur %d ms",
         coop_hosted   = "Session co-op créée : %s — attends tes potes puis lance une mission.",
         coop_joined   = "Session co-op rejointe : %s — tu suis l'hôte.",
         coop_left     = "Session co-op quittée.",
@@ -132,6 +134,7 @@ local LOCALES = {
         hud_hostiles  = "Hostiles: %d",
         hud_distance  = "%d m",
         hud_coop      = "CO-OP %s · %d player(s)",
+        hud_ping_warn = "⚠ Latency — Host %d ms · Player %d ms",
         coop_hosted   = "Co-op session created: %s — wait for friends, then start a mission.",
         coop_joined   = "Co-op session joined: %s — following the host.",
         coop_left     = "Co-op session left.",
@@ -199,7 +202,8 @@ local Coop = {
     outRemaining = 0, outVote = "", outResolved = "",
     -- état d'équipe reçu (du relais)
     inb = { peerCount = 1, teamRemaining = 0, mission = nil, phaseIndex = 0,
-            phaseType = "", objective = "", resolved = "", hostTs = 0 },
+            phaseType = "", objective = "", resolved = "", hostTs = 0,
+            selfPingMs = 0, worstPingMs = 0 },
 }
 
 local COOP_OUT = "coop_out.json"
@@ -250,6 +254,8 @@ local function coopReadIn()
             objective     = str("objective"),
             resolved      = str("resolved"),
             hostTs        = num("hostTs", 0),
+            selfPingMs    = num("selfPingMs", 0),
+            worstPingMs   = num("worstPingMs", 0),
         }
     end)
 end
@@ -328,6 +334,22 @@ end
 function Coop.peerCount()
     if not Coop.active() then return 1 end
     return math.max(1, Coop.inb.peerCount or 1)
+end
+
+-- Ping (RTT ms) mesuré par le relais. selfPing = notre latence vers l'hôte
+-- (0 pour l'hôte lui-même) ; worstPing = pire latence parmi les joueurs
+-- connectés (ce que voit l'hôte). Retourne l'info pour un avertissement
+-- discret quand la latence dépasse le seuil ; nil si co-op inactif ou solo.
+function Coop.pingWarning()
+    if not Coop.active() or Coop.peerCount() < 2 then return nil end
+    -- L'hôte est le serveur autoritaire : sa latence de référence est 0.
+    -- Le « joueur » affiché est celui dont la latence pose problème :
+    --   côté hôte  -> le PIRE ping des joueurs connectés (worstPingMs) ;
+    --   côté joiner -> SA propre latence vers l'hôte (selfPingMs).
+    local player = Coop.isHost() and (Coop.inb.worstPingMs or 0)
+                                  or  (Coop.inb.selfPingMs or 0)
+    if player < CONFIG.pingWarnMs then return nil end
+    return { host = 0, player = player }
 end
 
 function Coop.sync(dt)
@@ -1876,12 +1898,15 @@ local function refreshHud()
             barText = string.format("%d%%", math.floor(barFrac * 100))
         end
     end
-    local coopLine
+    local coopLine, pingLine
     if Coop.active() then
         coopLine = L.hud_coop:format(Coop.role, Coop.peerCount())
+        local pw = Coop.pingWarning()
+        if pw then pingLine = L.hud_ping_warn:format(pw.host, pw.player) end
     end
     Run.hud = { title = T(Run.def.title), objective = objective or "",
-                detail = detail, barFrac = barFrac, barText = barText, coop = coopLine }
+                detail = detail, barFrac = barFrac, barText = barText,
+                coop = coopLine, ping = pingLine }
 end
 
 local function renderHud()
@@ -1901,6 +1926,7 @@ local function renderHud()
     if ImGui.Begin("NIGHT_SHIFT_HUD", flags) then
         ImGui.TextColored(0.99, 0.93, 0.04, 1.0, "◤ NIGHT SHIFT — " .. h.title)
         if h.coop then ImGui.TextColored(0.30, 0.91, 0.96, 1.0, h.coop) end
+        if h.ping then ImGui.TextColored(0.98, 0.62, 0.10, 1.0, h.ping) end
         ImGui.Separator()
         ImGui.Text(h.objective)
         if h.barFrac then ImGui.ProgressBar(h.barFrac, 280, 16, h.barText) end
