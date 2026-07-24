@@ -92,6 +92,7 @@ local LOCALES = {
         deleted      = "Préréglage supprimé : %s",
         restored     = "Réglages audio d'origine rétablis.",
         err_noname   = "Donne un nom au préréglage avant de sauver.",
+        err_reserved = "Ce nom est réservé à un préréglage d'usine — choisis-en un autre.",
         win_opened   = "Table de mixage : ouverte",
         win_closed   = "Table de mixage : fermée",
     },
@@ -112,6 +113,7 @@ local LOCALES = {
         deleted      = "Preset deleted: %s",
         restored     = "Original audio settings restored.",
         err_noname   = "Name the preset before saving.",
+        err_reserved = "That name is reserved for a factory preset — pick another.",
         win_opened   = "Mixing desk: open",
         win_closed   = "Mixing desk: closed",
     },
@@ -296,11 +298,21 @@ local function loadPresets()
     end)
 end
 
+-- Un nom d'usine (clé, nom fr ou en) est réservé : un préréglage perso qui le
+-- réutiliserait serait masqué par l'usine (findPreset teste l'usine d'abord).
+local function isReservedName(name)
+    for _, b in ipairs(BUILTIN) do
+        if b.key == name or b.name == name or b.nameEn == name then return true end
+    end
+    return false
+end
+
 -- Sauve les volumes courants comme préréglage utilisateur (écrase si le nom
 -- existe déjà). Renvoie ok, message.
 local function savePreset(name)
     name = sanitizeName(name)
     if name == "" then return false, L.err_noname end
+    if isReservedName(name) then return false, L.err_reserved end
     local vals = {}
     for _, ch in ipairs(CONFIG.channels) do
         vals[ch.id] = clampVol(M.values[ch.id] or ch.default)
@@ -367,11 +379,13 @@ local function renderWindow()
         if #M.userPresets > 0 then
             ImGui.Separator()
             ImGui.Text(L.win_custom)
+            local toDelete   -- ne pas muter la liste pendant l'itération ipairs
             for _, p in ipairs(M.userPresets) do
                 if ImGui.Button(p.name) then applyPreset(p.name) end
                 ImGui.SameLine()
-                if ImGui.Button("x##" .. p.name) then deletePreset(p.name) end
+                if ImGui.Button("x##" .. p.name) then toDelete = p.name end
             end
+            if toDelete then deletePreset(toDelete) end
         end
 
         ImGui.Separator()

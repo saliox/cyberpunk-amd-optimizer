@@ -220,6 +220,38 @@ table.insert(SCENARIOS, { name = "fenetre : le bouton Fermer la referme", fn = f
     expect(not MOD.IsWindowOpen(), "le bouton Fermer devrait fermer la fenetre")
 end })
 
+table.insert(SCENARIOS, { name = "preset : un nom d'usine est reserve (pas de masquage)", fn = function()
+    seedSettings()
+    loadMod()
+    MOD.SetChannel("music", 5)
+    local ok, msg = MOD.SavePreset("Combat")   -- nom d'usine (fr)
+    expect(not ok, "sauver sous un nom d'usine doit etre refuse")
+    expect(msg ~= nil, "un message d'erreur doit etre renvoye")
+    expect(MOD.GetPreset("Combat").music == 45, "le preset d'usine ne doit pas etre masque (music=45)")
+    expect(not MOD.SavePreset("combat"), "refus aussi par cle d'usine")
+    expect(not MOD.SavePreset("Clear dialogue"), "refus aussi par nom d'usine anglais")
+end })
+
+table.insert(SCENARIOS, { name = "fenetre : supprimer un preset non-dernier retire le bon", fn = function()
+    seedSettings()
+    loadMod()
+    MOD.SetChannel("music", 10); MOD.SavePreset("A")
+    MOD.SetChannel("music", 20); MOD.SavePreset("B")
+    MOD.SetChannel("music", 30); MOD.SavePreset("C")
+    MOD.ShowWindow()
+    SIM.imgui.buttonPress["x##A"] = true       -- supprime le premier (non-dernier)
+    draw()
+    local names = MOD.ListPresets()
+    local hasA, hasB, hasC = false, false, false
+    for _, n in ipairs(names) do
+        if n == "A" then hasA = true elseif n == "B" then hasB = true elseif n == "C" then hasC = true end
+    end
+    expect(not hasA, "A doit etre supprime")
+    expect(hasB and hasC, "B et C doivent rester (pas de saut d'iteration)")
+    expect(MOD.GetPreset("B").music == 20 and MOD.GetPreset("C").music == 30,
+        "les presets restants gardent leurs valeurs")
+end })
+
 table.insert(SCENARIOS, { name = "fenetre : erreur ImGui en rendu -> fenetre coupee, pile reequilibree", fn = function()
     seedSettings()
     loadMod()

@@ -280,6 +280,21 @@ table.insert(SCENARIOS, { name = "pont : une commande n'est exécutée qu'une fo
         "une commande au même id ne doit pas être ré-exécutée")
 end })
 
+table.insert(SCENARIOS, { name = "pont : set_cap ne touche PAS au VSync et reste annulable", fn = function()
+    loadMod()
+    feedFps(120, 3)
+    SIM.settings["/video/display|VSync"] = true    -- le joueur a VSync ON
+    writeJson("bridge_command.json", '{"id":11,"cmd":"set_cap","cap":90}')
+    MOD.PollCommands()
+    expect(SIM.settings["/video/display|MaxFPS"] == 90, "cap 90 attendu")
+    expect(SIM.settings["/video/display|VSync"] == true,
+        "set_cap ne doit PAS couper le VSync (effet de bord eliminé)")
+    local n = MOD.Restore()
+    expect(n and n >= 1, "set_cap doit etre annulable (Restore effectif)")
+    expect(SIM.settings["/video/display|MaxFPS"] ~= 90, "Restore doit annuler le cap")
+    expect(SIM.settings["/video/display|VSync"] == true, "VSync jamais modifié par set_cap")
+end })
+
 table.insert(SCENARIOS, { name = "pont : cap piloté par l'app (override du conseil)", fn = function()
     loadMod()
     feedFps(120, 3)   -- cap conseillé = 116

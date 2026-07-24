@@ -397,6 +397,21 @@ local function applyClarity()
     return applied
 end
 
+-- Applique UNIQUEMENT le cap FPS (les entrées autoCap), sans toucher à VSync
+-- ni au reste du préréglage. Capture l'état d'origine et marque « appliqué »
+-- pour que l'app puisse voir et annuler le changement (contrairement à un
+-- applySettings brut sur toute la liste).
+local function applyCapOnly(cap)
+    local capList = {}
+    for _, s in ipairs(CONFIG.latencySettings) do
+        if s.autoCap then capList[#capList + 1] = s end
+    end
+    if #M.restore == 0 then M.restore = captureCurrent(capList) end
+    local applied = applySettings(capList, cap)
+    if #applied > 0 then M.applied = true end
+    return applied
+end
+
 --------------------------------------------------------------------------
 -- Pont avec l'app « Cyberpunk AMD Optimizer » (IPC par fichiers JSON)
 --------------------------------------------------------------------------
@@ -475,7 +490,7 @@ local function runCommand(cmd, cap, value)
         local applied = applyClarity()
         return true, ("apply_clarity: %d réglage(s)"):format(#applied)
     elseif cmd == "set_cap" then
-        local applied = applySettings(CONFIG.latencySettings, cap)
+        local applied = applyCapOnly(cap)   -- seulement le cap FPS (pas VSync)
         return true, ("set_cap: %d → %d réglage(s)"):format(cap or 0, #applied)
     elseif cmd == "reset" then
         resetMeter()

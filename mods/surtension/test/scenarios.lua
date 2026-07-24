@@ -391,6 +391,35 @@ table.insert(SCENARIOS, { name = "co-op : pas d'avertissement de ping en solo", 
         "le solo ne doit jamais afficher d'avertissement de latence")
 end })
 
+table.insert(SCENARIOS, { name = "co-op : finale sans vote conclu -> filet de securite (jamais fige)", fn = function()
+    loadMod()
+    MOD.HostCoop("T", "h")
+    MOD.Jump("finale")
+    expect(MOD.GetPhase() == "finale", "finale attendue")
+    expect(SIM.effects["GameplayRestriction.NoMovement"], "verrou de finale attendu")
+    writeCoopIn({ mission = "surtension" })   -- relais actif mais AUCUN vote resolu
+    MOD.CoopSync()
+    tickFor(37)                               -- le vote ne conclut jamais (35 s)
+    expect(not SIM.effects["GameplayRestriction.NoMovement"],
+        "co-op fige : le joueur doit etre debloque au bout du timeout")
+    expect(SIM.dilation == 0, "ralenti non leve au secours co-op")
+    expect(activeMappins() == 2, "marqueurs de secours co-op manquants")
+    teleport(GRID); tick(0.2)
+    expect(MOD.GetPhase() == "epilogue" or MOD.GetPhase() == "done",
+        "en secours co-op, marcher vers une fin doit l'appliquer directement")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : sans relais, la vague ne se fige pas (secours apres coopStale)", fn = function()
+    loadMod()
+    MOD.HostCoop("T", "h")
+    MOD.Start()
+    toWave1()                 -- intro : deja au-dela de coopStale sans coop_in
+    tickFor(3); killAll()     -- l'hote nettoie sa part ; toujours aucun relais
+    tickFor(2)
+    expect(MOD.GetPhase() ~= "wave1",
+        "sans relais, la vague doit finir par avancer (pas de blocage co-op)")
+end })
+
 table.insert(SCENARIOS, { name = "co-op : quitter retablit le solo", fn = function()
     loadMod()
     MOD.HostCoop("T", "h")

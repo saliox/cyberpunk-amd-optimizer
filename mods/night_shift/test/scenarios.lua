@@ -602,6 +602,39 @@ table.insert(SCENARIOS, { name = "co-op : pas d'avertissement de ping en solo", 
         "le solo ne doit jamais afficher d'avertissement de latence")
 end })
 
+table.insert(SCENARIOS, { name = "co-op : choix sans vote conclu -> filet de securite (jamais fige)", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(9)
+    coopDriveToType("choice")
+    expect(SIM.effects["GameplayRestriction.NoMovement"], "verrou de choix attendu en co-op")
+    writeCoopIn({ mission = "ns09" })    -- relais actif, AUCUN vote resolu
+    NS.CoopSync()
+    tickFor(40, 0.5)                     -- le vote ne conclut jamais (timeout 35 s)
+    expect(not SIM.effects["GameplayRestriction.NoMovement"],
+        "co-op fige : le joueur doit etre debloque au bout du timeout")
+    expect((activeMappins() or 0) >= 1, "marqueurs de secours attendus")
+    -- en mode secours, le hotkey applique DIRECTEMENT (plus de vote)
+    press("ns_choice_a")
+    expect(NS.GetChoices()["ns09"] == "a",
+        "en secours co-op, un choix doit s'appliquer directement")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : un vote 'secret' non merite est refuse (gate CODA)", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(15)
+    coopDriveToType("choice")
+    -- align_signal < 2 sur une run libre : la fin secrete ne doit PAS
+    -- s'appliquer meme si le relais renvoyait resolved="secret"
+    writeCoopIn({ mission = "ns15", resolved = "secret" })
+    NS.CoopSync()
+    tickFor(1, 0.5)
+    expect(NS.GetChoices()["ns15"] ~= "secret",
+        "un vote secret non merite ne doit pas debloquer la fin secrete")
+    expect(NS.GetStatus() == "running", "la phase de choix doit continuer (secret refuse)")
+end })
+
 table.insert(SCENARIOS, { name = "co-op : quitter la session retablit le solo", fn = function()
     NS = loadMod()
     NS.HostCoop("T", "h")

@@ -154,6 +154,26 @@ async function main() {
     9000, 'détection de déconnexion');
   ok(readIn(hostDir).peerCount === 2, 'client déconnecté retiré de l\'équipe (heartbeat périmé)');
 
+  // 5) SÉCURITÉ ping : un pair authentifié qui envoie des pong FALSIFIÉS
+  //    (t=0/1, pas l'horodatage qu'on lui a envoyé) ne doit pas gonfler le ping.
+  const forger = await new Promise(res => {
+    const s = net.createConnection(PORT, '127.0.0.1', () => {
+      s.write(JSON.stringify({ type: 'hello', token: TOKEN,
+        peer: { id: 'forger', role: 'join', remaining: 0 } }) + '\n');
+      const iv = setInterval(() => {
+        try { s.write(JSON.stringify({ type: 'pong', t: 0 }) + '\n'); } catch (_) {}
+        try { s.write(JSON.stringify({ type: 'pong', t: 1 }) + '\n'); } catch (_) {}
+      }, 120);
+      setTimeout(() => { clearInterval(iv); res(s); }, 1500);
+    });
+    s.on('error', () => res(null));
+  });
+  await sleep(300);
+  const wp = readIn(hostDir).worstPingMs;
+  ok(typeof wp === 'number' && wp < 5000,
+    'un pong falsifié ne gonfle pas worstPingMs (=' + wp + ' ms, resté borné)');
+  if (forger) { try { forger.destroy(); } catch (_) {} }
+
   // nettoyage
   for (const p of procs) { try { p.kill('SIGKILL'); } catch (_) {} }
   for (const d of [hostDir, c1, c2]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {} }

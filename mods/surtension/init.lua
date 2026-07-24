@@ -311,7 +311,15 @@ local Coop = {
     inb = { peerCount = 1, teamRemaining = 0, mission = nil, phaseIndex = 0,
             phaseType = "", objective = "", resolved = "", hostTs = 0,
             selfPingMs = 0, worstPingMs = 0 },
+    inbReceived = false,  -- a-t-on déjà reçu un état d'équipe du relais ?
+    noData = 0,           -- secondes en co-op sans données d'équipe (relais absent ?)
 }
+
+local function coopDefaultInb()
+    return { peerCount = 1, teamRemaining = 0, mission = nil, phaseIndex = 0,
+             phaseType = "", objective = "", resolved = "", hostTs = 0,
+             selfPingMs = 0, worstPingMs = 0 }
+end
 
 local COOP_OUT = "coop_out.json"
 local COOP_IN  = "coop_in.json"
@@ -364,6 +372,7 @@ local function coopReadIn()
             selfPingMs    = num("selfPingMs", 0),
             worstPingMs   = num("worstPingMs", 0),
         }
+        Coop.inbReceived = true   -- on a des données d'équipe fraîches
     end)
 end
 
@@ -376,6 +385,7 @@ function Coop.host(code, id)
     Coop.role = "host"
     Coop.code = code or "NS-COOP"
     Coop.id = id or ("host-" .. coopClock())
+    Coop.inbReceived = false; Coop.noData = 0
     Coop.inb.peerCount = 1
     coopWriteOut()
     return Coop.code
@@ -385,6 +395,7 @@ function Coop.join(code, id)
     Coop.role = "join"
     Coop.code = code or "NS-COOP"
     Coop.id = id or ("join-" .. coopClock())
+    Coop.inbReceived = false; Coop.noData = 0
     coopReadIn()
     coopWriteOut()
     return Coop.code
@@ -394,6 +405,8 @@ function Coop.leave()
     Coop.role = "off"
     Coop.outMission, Coop.outObjective, Coop.outVote, Coop.outResolved = nil, "", "", ""
     Coop.outRemaining, Coop.outPhaseIndex = 0, 0
+    Coop.inb = coopDefaultInb()     -- purge l'état d'équipe (pas de vote résiduel)
+    Coop.inbReceived = false; Coop.noData = 0
     pcall(function() local f = io.open(COOP_OUT, "w"); if f then f:write('{"left":true}'); f:close() end end)
 end
 
@@ -417,9 +430,13 @@ function Coop.teamRemaining()
 end
 
 -- La vague est-elle terminée pour l'ÉQUIPE ? (true en solo)
+-- Tant que le relais n'a rien renvoyé, on N'AVANCE PAS (éviter de sauter une
+-- vague avant que l'équipe soit comptée) — mais si aucun relais ne répond au
+-- bout de coopStale secondes, on débloque (relais absent) pour ne pas figer.
 function Coop.teamClear()
     if not Coop.active() then return true end
-    return (Coop.inb.teamRemaining or 0) <= 0
+    if Coop.inbReceived then return (Coop.inb.teamRemaining or 0) <= 0 end
+    return Coop.noData >= CONFIG.coopStale
 end
 
 -- Cible que l'hôte impose au joiner (mission à suivre)
@@ -460,6 +477,7 @@ end
 
 function Coop.sync(dt)
     if not Coop.active() then return end
+    if not Coop.inbReceived then Coop.noData = Coop.noData + (dt or 0) end
     Coop.syncTimer = Coop.syncTimer + (dt or 0)
     if Coop.syncTimer < CONFIG.coopSync then return end
     Coop.syncTimer = 0
@@ -1110,7 +1128,9 @@ local function chooseEnding(ending)
         screenMessage(L.invalid_choice)
         return
     end
-    if Coop.active() then
+    -- CO-OP : c'est un vote — SAUF si la finale est déjà passée en choix de
+    -- secours par déplacement (le vote n'a pas conclu) : là, chacun tranche.
+    if Coop.active() and not Mission.fallbackChoice then
         Coop.setVote(key)
         Coop.syncNow()
         screenMessage(L.vote_cast:format(key == "grid" and "☀" or "🌑"))
@@ -1123,48 +1143,60 @@ end
 -- Sans touche assignée, bascule de secours sur le choix par déplacement.
 -- Le timeout est mesuré en temps réel (os.time) pour ne pas être étiré
 -- par le ralenti ×0.35 si le delta d'onUpdate est dilaté.
+-- Bascule de secours : on débloque le joueur (fin du ralenti + du blocage de
+-- déplacement) et on place les marqueurs pour trancher en marchant. Partagé
+-- par le solo (touches non assignées) ET le co-op (vote qui ne conclut pas) —
+-- garantit qu'on ne reste JAMAIS figé dans la finale.
+local function enterFallbackChoice()
+    if Mission.fallbackChoice then return end
+    Mission.fallbackChoice = true
+    Game.SetTimeDilation(0)
+    local player = Game.GetPlayer()
+    if player then
+        pcall(function()
+            StatusEffectHelper.RemoveStatusEffect(player, "GameplayRestriction.NoMovement")
+        end)
+    end
+    addMappin(CONFIG.gridPos)                                        -- LUMIÈRE
+    addMappin(CONFIG.sellPos, gamedataMappinVariant.ExclamationMarkVariant) -- NOIR
+    screenMessage(L.fallback_hint)
+end
+
 local function updateFinale(delta)
     playLines(L.FINALE, delta, 0)
 
-    -- CO-OP : la fin se décide par VOTE (majorité, arbitrée par le relais).
-    -- Dès qu'une fin est résolue, tout le monde l'applique ensemble.
-    if Coop.active() then
-        local r = Coop.resolvedVote()
-        if r == "grid" or r == "sell" then applyEnding(r); return end
-        if Mission.step >= #L.FINALE and (Mission.timer % 8) < delta then
-            screenMessage(L.coop_vote_hint)
-        end
-        Mission.timer = Mission.timer + delta
-        return
-    end
-
+    -- temps écoulé réel (non étiré par le ralenti ×0.35)
     local elapsed = Mission.timer
     if Mission.finaleStartedAt then
         local now = wallClock()
         if now then elapsed = now - Mission.finaleStartedAt end
     end
 
+    -- CO-OP : la fin se décide par VOTE (majorité, arbitrée par le relais).
+    -- Dès qu'une fin est résolue, tout le monde l'applique ensemble.
+    if Coop.active() and not Mission.fallbackChoice then
+        local r = Coop.resolvedVote()
+        if r == "grid" or r == "sell" then applyEnding(r); return end
+        if Mission.step >= #L.FINALE and (Mission.timer % 8) < delta then
+            screenMessage(L.coop_vote_hint)
+        end
+        -- FILET DE SÉCURITÉ : un vote qui ne conclut jamais (joueur sans touche,
+        -- pair déconnecté encore compté) ne doit pas figer tout le monde à vie.
+        if elapsed >= CONFIG.finaleTimeout then enterFallbackChoice() end
+        return
+    end
+
     if not Mission.fallbackChoice then
-        -- rappel pulsé une fois les répliques passées
+        -- SOLO : rappel pulsé une fois les répliques passées
         if Mission.step >= #L.FINALE and (Mission.timer % 8) < delta then
             screenMessage(L.finale_reminder)
             playSound("ui_menu_onpress")
         end
         -- secours : touches non assignées ? on repasse en choix par déplacement
-        if elapsed >= CONFIG.finaleTimeout then
-            Mission.fallbackChoice = true
-            Game.SetTimeDilation(0)
-            local player = Game.GetPlayer()
-            if player then
-                pcall(function()
-                    StatusEffectHelper.RemoveStatusEffect(player, "GameplayRestriction.NoMovement")
-                end)
-            end
-            addMappin(CONFIG.gridPos)                                        -- LUMIÈRE
-            addMappin(CONFIG.sellPos, gamedataMappinVariant.ExclamationMarkVariant) -- NOIR
-            screenMessage(L.fallback_hint)
-        end
+        if elapsed >= CONFIG.finaleTimeout then enterFallbackChoice() end
     else
+        -- choix par déplacement (solo, ou co-op après échec du vote) :
+        -- chooseEnding applique directement puisque fallbackChoice est vrai
         if distanceTo(CONFIG.gridPos) <= CONFIG.reachDistance then
             chooseEnding("grid")
         elseif distanceTo(CONFIG.sellPos) <= CONFIG.reachDistance then

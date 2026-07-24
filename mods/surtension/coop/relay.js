@@ -175,8 +175,9 @@ function writeIn(state) {
 function now() { return Date.now(); }
 
 if (opt.mode === 'host') {
-  const peers = {};        // key -> coop_out nettoyé (+ ts)
-  const clients = new Set();
+  const peers = {};            // key -> coop_out nettoyé (+ ts)
+  const clients = new Set();   // sockets AUTHENTIFIÉES (dans l'équipe)
+  const allSockets = new Set();// TOUTES les sockets vivantes (même non authentifiées)
   function recompute() {
     const merged = mergePeers(peers, now());
     // ping le plus mauvais parmi les joueurs connectés (ce que voit l'hôte)
@@ -196,28 +197,41 @@ if (opt.mode === 'host') {
   // secondes ; il renvoie un pong avec le même horodatage -> RTT = maintenant - t
   setInterval(() => {
     const t = now();
-    for (const c of clients) { try { c.write(JSON.stringify({ type: 'ping', t }) + '\n'); } catch (_) {} }
+    for (const c of clients) {
+      c._lastPingT = t;   // mémorise l'horodatage envoyé (valide le pong reçu)
+      try { c.write(JSON.stringify({ type: 'ping', t }) + '\n'); } catch (_) {}
+    }
   }, 1000);
   // l'état local de l'hôte (fichier de confiance, mais borné quand même)
   setInterval(() => {
     const o = readOut();
     if (o) { const p = sanitizePeer(o, 'host'); if (p) { p.id = 'local-host'; p.ts = now(); peers['local-host'] = p; recompute(); } }
   }, 200);
-  // purge des pairs périmés (déconnexions silencieuses)
+  // purge des pairs périmés (déconnexions silencieuses) + reap des sockets muettes
   setInterval(() => {
     const n = now(); let changed = false;
     for (const k of Object.keys(peers)) {
       if (k !== 'local-host' && n - peers[k].ts > STALE_MS) { delete peers[k]; changed = true; }
     }
     if (changed) recompute();
+    // Le timeout natif de la socket est remis à zéro par NOS écritures (pings),
+    // il ne détecte donc plus un client muet. On juge sur la dernière DONNÉE
+    // REÇUE et on ferme au-delà de IDLE_TIMEOUT (anti-slot squatté).
+    for (const s of allSockets) {
+      if (n - (s._lastRecv || 0) > IDLE_TIMEOUT) { try { s.destroy(); } catch (_) {} }
+    }
   }, 1000);
 
   const server = net.createServer(sock => {
-    if (clients.size >= opt.maxClients) {   // anti-flood de connexions
+    // le plafond compte TOUTES les sockets (même pas encore authentifiées) :
+    // sinon un flood de connexions muettes non authentifiées le contourne.
+    if (allSockets.size >= opt.maxClients) {
       try { sock.destroy(); } catch (_) {}
       console.error('[relay] connexion refusée (max ' + opt.maxClients + ' atteint)');
       return;
     }
+    allSockets.add(sock);
+    sock._lastRecv = now();
     const ip = sock.remoteAddress;
     let authed = false;
     let buf = '';
@@ -251,9 +265,12 @@ if (opt.mode === 'host') {
         if (msg.peer) { const p = sanitizePeer(msg.peer, 'join'); if (p) { p.ts = now(); peers[peerKey] = p; recompute(); } }
         return;
       }
-      if (msg.type === 'pong') {   // réponse à notre ping -> RTT mesuré
-        sock._rtt = sInt(now() - Number(msg.t), 0, 60000, 0);
-        if (peers[peerKey]) peers[peerKey].pingMs = sock._rtt;
+      if (msg.type === 'pong') {   // réponse à NOTRE ping -> RTT mesuré
+        // on n'accepte que l'horodatage EXACT qu'on a envoyé : un pong forgé
+        // ({ t: 0/null/ancien }) ne peut pas gonfler worstPingMs.
+        if (sock._lastPingT && Number(msg.t) === sock._lastPingT) {
+          sock._rtt = sInt(now() - sock._lastPingT, 0, 60000, 0);
+        }
         return;
       }
       if (msg.type === 'out' && msg.peer) {
@@ -263,15 +280,21 @@ if (opt.mode === 'host') {
     }
 
     sock.on('data', d => {
+      sock._lastRecv = now();
       buf += d.toString('utf8');
-      if (buf.length > MAX_BUF) return drop('tampon saturé (pas de fin de ligne)');
+      // on traite d'abord les lignes complètes, PUIS on vérifie le reste :
+      // un segment TCP portant plusieurs messages ne doit pas être jeté en bloc.
       let nl;
       while ((nl = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
         try { handle(line); } catch (_) {}
       }
+      if (buf.length > MAX_BUF) return drop('tampon saturé (pas de fin de ligne)');
     });
-    const cleanup = () => { clients.delete(sock); if (peers[peerKey]) { delete peers[peerKey]; recompute(); } };
+    const cleanup = () => {
+      allSockets.delete(sock); clients.delete(sock);
+      if (peers[peerKey]) { delete peers[peerKey]; recompute(); }
+    };
     sock.on('timeout', () => drop('inactif'));
     sock.on('close', cleanup);
     sock.on('error', () => cleanup());
@@ -290,7 +313,6 @@ if (opt.mode === 'host') {
   let buf = '';
   sock.on('data', d => {
     buf += d.toString('utf8');
-    if (buf.length > MAX_BUF) { try { sock.destroy(); } catch (_) {} return; }
     let nl;
     while ((nl = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
@@ -302,6 +324,7 @@ if (opt.mode === 'host') {
         else if (msg.type === 'in') writeIn(msg.state);
       } catch (_) {}
     }
+    if (buf.length > MAX_BUF) { try { sock.destroy(); } catch (_) {} return; }
   });
   sock.on('timeout', () => { console.error('[relay] hôte muet — fermeture'); try { sock.destroy(); } catch (_) {} });
   sock.on('error', e => console.error('[relay] erreur:', e.message));

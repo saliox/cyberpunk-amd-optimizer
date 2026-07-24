@@ -204,7 +204,15 @@ local Coop = {
     inb = { peerCount = 1, teamRemaining = 0, mission = nil, phaseIndex = 0,
             phaseType = "", objective = "", resolved = "", hostTs = 0,
             selfPingMs = 0, worstPingMs = 0 },
+    inbReceived = false,  -- a-t-on déjà reçu un état d'équipe du relais ?
+    noData = 0,           -- secondes en co-op sans données d'équipe (relais absent ?)
 }
+
+local function coopDefaultInb()
+    return { peerCount = 1, teamRemaining = 0, mission = nil, phaseIndex = 0,
+             phaseType = "", objective = "", resolved = "", hostTs = 0,
+             selfPingMs = 0, worstPingMs = 0 }
+end
 
 local COOP_OUT = "coop_out.json"
 local COOP_IN  = "coop_in.json"
@@ -257,6 +265,7 @@ local function coopReadIn()
             selfPingMs    = num("selfPingMs", 0),
             worstPingMs   = num("worstPingMs", 0),
         }
+        Coop.inbReceived = true   -- on a des données d'équipe fraîches
     end)
 end
 
@@ -269,6 +278,7 @@ function Coop.host(code, id)
     Coop.role = "host"
     Coop.code = code or "NS-COOP"
     Coop.id = id or ("host-" .. coopClock())
+    Coop.inbReceived = false; Coop.noData = 0
     Coop.inb.peerCount = 1
     coopWriteOut()
     return Coop.code
@@ -278,6 +288,7 @@ function Coop.join(code, id)
     Coop.role = "join"
     Coop.code = code or "NS-COOP"
     Coop.id = id or ("join-" .. coopClock())
+    Coop.inbReceived = false; Coop.noData = 0
     coopReadIn()
     coopWriteOut()
     return Coop.code
@@ -287,6 +298,8 @@ function Coop.leave()
     Coop.role = "off"
     Coop.outMission, Coop.outObjective, Coop.outVote, Coop.outResolved = nil, "", "", ""
     Coop.outRemaining, Coop.outPhaseIndex = 0, 0
+    Coop.inb = coopDefaultInb()     -- purge l'état d'équipe (pas de vote résiduel)
+    Coop.inbReceived = false; Coop.noData = 0
     pcall(function() local f = io.open(COOP_OUT, "w"); if f then f:write('{"left":true}'); f:close() end end)
 end
 
@@ -310,9 +323,13 @@ function Coop.teamRemaining()
 end
 
 -- La vague est-elle terminée pour l'ÉQUIPE ? (true en solo)
+-- Tant que le relais n'a rien renvoyé, on N'AVANCE PAS (ne pas sauter une
+-- vague avant que l'équipe soit comptée) ; mais si aucun relais ne répond au
+-- bout de coopStale secondes, on débloque (relais absent) pour ne pas figer.
 function Coop.teamClear()
     if not Coop.active() then return true end
-    return (Coop.inb.teamRemaining or 0) <= 0
+    if Coop.inbReceived then return (Coop.inb.teamRemaining or 0) <= 0 end
+    return Coop.noData >= CONFIG.coopStale
 end
 
 -- Cible que l'hôte impose au joiner (mission à suivre)
@@ -354,6 +371,7 @@ end
 
 function Coop.sync(dt)
     if not Coop.active() then return end
+    if not Coop.inbReceived then Coop.noData = Coop.noData + (dt or 0) end
     Coop.syncTimer = Coop.syncTimer + (dt or 0)
     if Coop.syncTimer < CONFIG.coopSync then return end
     Coop.syncTimer = 0
@@ -933,12 +951,16 @@ local function distanceTo(p)
 end
 
 local function screenMessage(text)
-    local defs = Game.GetAllBlackboardDefs()
-    local ui = Game.GetBlackboardSystem():Get(defs.UI_Notifications)
-    local msg = SimpleScreenMessage.new()
-    msg.message = text
-    msg.isShown = true
-    ui:SetVariant(defs.UI_Notifications.OnscreenMessage, ToVariant(msg), true)
+    -- pcall : un système de tableau noir transitoirement nil (frontière de
+    -- chargement/teardown) ne doit jamais faire remonter une erreur du tick
+    pcall(function()
+        local defs = Game.GetAllBlackboardDefs()
+        local ui = Game.GetBlackboardSystem():Get(defs.UI_Notifications)
+        local msg = SimpleScreenMessage.new()
+        msg.message = text
+        msg.isShown = true
+        ui:SetVariant(defs.UI_Notifications.OnscreenMessage, ToVariant(msg), true)
+    end)
 end
 
 local function playSound(event)
@@ -946,12 +968,17 @@ local function playSound(event)
 end
 
 local function addMappin(p, variant)
-    local data = MappinData.new()
-    data.mappinType = TweakDBID.new("Mappins.DefaultStaticMappin")
-    data.variant = variant or gamedataMappinVariant.QuestGiverVariant
-    data.visibleThroughWalls = true
-    local id = Game.GetMappinSystem():RegisterMappin(data, vec4(p))
-    table.insert(Run.mappins, id)
+    local id
+    -- pcall : GetMappinSystem() peut être nil sur une frontière de chargement ;
+    -- ne jamais laisser l'erreur remonter du tick onUpdate
+    pcall(function()
+        local data = MappinData.new()
+        data.mappinType = TweakDBID.new("Mappins.DefaultStaticMappin")
+        data.variant = variant or gamedataMappinVariant.QuestGiverVariant
+        data.visibleThroughWalls = true
+        id = Game.GetMappinSystem():RegisterMappin(data, vec4(p))
+        table.insert(Run.mappins, id)
+    end)
     return id
 end
 
@@ -1322,6 +1349,10 @@ local function resetRun()
     if Coop.isHost() then Coop.setMissionPhase(nil, 0, "", "") end
     Coop.setLocalRemaining(0)
     Coop.setVote("")
+    -- purge un vote résolu résiduel : la prochaine mission ne doit pas
+    -- s'auto-conclure sur un « resolved » laissé par la mission précédente
+    Coop.inb.resolved = ""
+    Coop.outResolved = ""
 end
 
 local function cancelRun(message, restoreClock)
@@ -1704,14 +1735,39 @@ PHASE.choice = {
         playLines(p.lines or {}, delta, 0)
         -- CO-OP : le choix se résout par VOTE (majorité, arbitré par l'hôte
         -- via le relais). Dès qu'un choix est résolu, tout le monde l'applique
-        -- ensemble ; pas de choix individuel par déplacement.
-        if Coop.active() then
+        -- ensemble. FILET DE SÉCURITÉ : si le vote ne conclut jamais (joueur
+        -- sans touche, égalité, pair déconnecté), on bascule au timeout sur le
+        -- choix par déplacement — jamais figé.
+        if Coop.active() and not Run.ps.walk then
             local r = Coop.resolvedVote()
-            if r and p.options[r] then applyChoice(r); return end
+            -- la fin secrète doit être méritée même par un vote (align_signal)
+            if r and p.options[r]
+                and (r ~= "secret" or condMet(p.secretRequires)) then
+                applyChoice(r); return
+            end
             if Run.step >= #(p.lines or {}) and (Run.timer % 8) < delta then
                 screenMessage(L.coop_vote_hint)
             end
-            Run.timer = Run.timer + delta
+            local coopElapsed = Run.timer
+            if Run.ps.startedWall then
+                local now = wallClock()
+                if now then coopElapsed = now - Run.ps.startedWall end
+            end
+            if coopElapsed >= (p.timeout or CONFIG.choiceTimeout) then
+                Run.ps.walk = true
+                Game.SetTimeDilation(0)
+                local player = Game.GetPlayer()
+                if player then
+                    pcall(function()
+                        StatusEffectHelper.RemoveStatusEffect(player, "GameplayRestriction.NoMovement")
+                    end)
+                end
+                if p.options.a then addMappin(p.options.a.pos) end
+                if p.options.b then
+                    addMappin(p.options.b.pos, gamedataMappinVariant.ExclamationMarkVariant)
+                end
+                screenMessage(L.choice_walk)
+            end
             return
         end
         local elapsed = Run.timer
@@ -1781,7 +1837,9 @@ end
 -- applyChoice() pour tout le monde en même temps.
 function selectChoiceOption(key)
     if not Run.phase or not Run.phase.options[key] then return false end
-    if Coop.active() then
+    -- CO-OP : c'est un VOTE — SAUF en mode secours par déplacement (le vote
+    -- n'a pas conclu) : là, chacun tranche directement.
+    if Coop.active() and not (Run.ps and Run.ps.walk) then
         Coop.setVote(key)
         Coop.syncNow()
         screenMessage(L.vote_cast:format(string.upper(key)))
