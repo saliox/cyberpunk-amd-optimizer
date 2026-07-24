@@ -202,7 +202,7 @@ local Coop = {
     outRemaining = 0, outVote = "", outResolved = "",
     -- état d'équipe reçu (du relais)
     inb = { peerCount = 1, teamRemaining = 0, mission = nil, phaseIndex = 0,
-            phaseType = "", objective = "", resolved = "", hostTs = 0,
+            phaseType = "", objective = "", resolved = "",
             selfPingMs = 0, worstPingMs = 0 },
     inbReceived = false,  -- a-t-on déjà reçu un état d'équipe du relais ?
     noData = 0,           -- secondes en co-op sans données d'équipe (relais absent ?)
@@ -210,7 +210,7 @@ local Coop = {
 
 local function coopDefaultInb()
     return { peerCount = 1, teamRemaining = 0, mission = nil, phaseIndex = 0,
-             phaseType = "", objective = "", resolved = "", hostTs = 0,
+             phaseType = "", objective = "", resolved = "",
              selfPingMs = 0, worstPingMs = 0 }
 end
 
@@ -261,7 +261,6 @@ local function coopReadIn()
             phaseType     = str("phaseType"),
             objective     = str("objective"),
             resolved      = str("resolved"),
-            hostTs        = num("hostTs", 0),
             selfPingMs    = num("selfPingMs", 0),
             worstPingMs   = num("worstPingMs", 0),
         }

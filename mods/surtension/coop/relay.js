@@ -180,16 +180,22 @@ if (opt.mode === 'host') {
   const allSockets = new Set();// TOUTES les sockets vivantes (même non authentifiées)
   function recompute() {
     const merged = mergePeers(peers, now());
-    // ping le plus mauvais parmi les joueurs connectés (ce que voit l'hôte)
+    // pire ping parmi les joueurs ENCORE dans l'équipe ET déjà mesurés :
+    //  - un client pas encore « ponged » (RTT inconnu) n'est PAS compté comme 0 ;
+    //  - un client dont le pair est périmé (sorti de l'équipe) ne compte plus.
     let worst = 0;
-    for (const c of clients) { if ((c._rtt || 0) > worst) worst = c._rtt; }
+    for (const c of clients) {
+      if (!c._peerKey || !peers[c._peerKey]) continue;         // hors équipe
+      if (typeof c._rtt === 'number' && c._rtt > worst) worst = c._rtt;
+    }
     merged.worstPingMs = worst;
     // l'hôte est le serveur : son ping vers la logique autoritaire = 0
     writeIn(Object.assign({}, merged, { selfPingMs: 0 }));
-    // chaque client reçoit SON propre ping (son RTT vers l'hôte)
+    // chaque client reçoit SON propre ping (RTT mesuré, 0 tant qu'inconnu)
     for (const c of clients) {
+      const rtt = (typeof c._rtt === 'number') ? c._rtt : 0;
       const line = JSON.stringify({ type: 'in',
-        state: Object.assign({}, merged, { selfPingMs: c._rtt || 0 }) }) + '\n';
+        state: Object.assign({}, merged, { selfPingMs: rtt }) }) + '\n';
       try { c.write(line); } catch (_) {}
     }
   }
@@ -261,6 +267,7 @@ if (opt.mode === 'host') {
         if (msg.type !== 'hello' || !tokenEqual(msg.token, opt.token)) return drop('authentification échouée');
         authed = true; clearTimeout(helloTimer);
         clients.add(sock);
+        sock._peerKey = peerKey;   // lie la socket à son entrée d'équipe (ping)
         console.error('[relay] ' + ip + ' authentifié (' + peerKey + ')');
         if (msg.peer) { const p = sanitizePeer(msg.peer, 'join'); if (p) { p.ts = now(); peers[peerKey] = p; recompute(); } }
         return;
