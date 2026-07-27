@@ -255,19 +255,29 @@ local function coopReadIn()
         local function num(key, dflt)
             return tonumber(raw:match('"' .. key .. '"%s*:%s*(%-?%d+)')) or dflt
         end
-        local function str(key)
-            return raw:match('"' .. key .. '"%s*:%s*"([^"]*)"') or ""
+        -- valeur bornée : défense en profondeur contre un coop_in fabriqué à la
+        -- main (hors relais) — le relais borne déjà, mais le mod ne fait pas
+        -- confiance aveugle au fichier.
+        local function cnum(key, dflt, lo, hi)
+            local v = num(key, dflt)
+            if v < lo then v = lo elseif v > hi then v = hi end
+            return v
+        end
+        local function str(key, maxLen)
+            local s = raw:match('"' .. key .. '"%s*:%s*"([^"]*)"') or ""
+            if #s > maxLen then s = s:sub(1, maxLen) end
+            return s
         end
         Coop.inb = {
-            peerCount     = num("peerCount", 1),
-            teamRemaining = num("teamRemaining", 0),
-            mission       = str("mission"),
-            phaseIndex    = num("phaseIndex", 0),
-            phaseType     = str("phaseType"),
-            objective     = str("objective"),
-            resolved      = str("resolved"),
-            selfPingMs    = num("selfPingMs", 0),
-            worstPingMs   = num("worstPingMs", 0),
+            peerCount     = cnum("peerCount", 1, 0, 999),
+            teamRemaining = cnum("teamRemaining", 0, 0, 100000),
+            mission       = str("mission", 32),
+            phaseIndex    = cnum("phaseIndex", 0, 0, 9999),
+            phaseType     = str("phaseType", 24),
+            objective     = str("objective", 80),
+            resolved      = str("resolved", 16),
+            selfPingMs    = cnum("selfPingMs", 0, 0, 60000),
+            worstPingMs   = cnum("worstPingMs", 0, 0, 60000),
         }
         Coop.inbReceived = true   -- on a des données d'équipe fraîches
         -- battement de cœur du relais : s'il avance, le relais est vivant ;
@@ -292,7 +302,7 @@ function Coop.host(code, id)
     Coop.id = id or ("host-" .. coopClock())
     Coop.inbReceived = false; Coop.noData = 0
     Coop.lastRelayTs = 0; Coop.staleTimer = 0; Coop.relayStale = false
-    Coop.inb.peerCount = 1
+    Coop.inb = coopDefaultInb()   -- pas d'état d'équipe résiduel d'une session précédente
     coopWriteOut()
     return Coop.code
 end
@@ -394,8 +404,11 @@ function Coop.sync(dt)
     dt = dt or 0
     if not Coop.inbReceived then
         Coop.noData = Coop.noData + dt
-    elseif Coop.peerCount() > 1 then
-        -- le ts du relais doit avancer ; s'il fige > coopStale, relais injoignable
+    else
+        -- une fois qu'on a reçu des données, le ts du relais doit avancer ;
+        -- s'il fige > coopStale, relais injoignable. Détecté MÊME à 1 seul pair :
+        -- sinon un coop_in gelé (peerCount==1) bloquerait la vague jusqu'au
+        -- waveTimeout (le relais peut mourir avec un seul pair connecté).
         Coop.staleTimer = Coop.staleTimer + dt
         if Coop.staleTimer > CONFIG.coopStale then Coop.relayStale = true end
     end

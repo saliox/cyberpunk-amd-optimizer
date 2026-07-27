@@ -478,6 +478,22 @@ table.insert(SCENARIOS, { name = "co-op : relais vivant (ts qui avance) ne decle
     expect(not MOD.GetCoop().relayLost, "un relais qui reecrit ne doit jamais etre 'perdu'")
 end })
 
+table.insert(SCENARIOS, { name = "co-op : relais mort a 1 SEUL pair -> desync detecte (pas d'angle mort)", fn = function()
+    loadMod()
+    MOD.HostCoop("T", "h")
+    MOD.Start()
+    toWave1()
+    tickFor(3)
+    writeCoopIn({ peerCount = 1, teamRemaining = 3, mission = "surtension" })   -- relais vivant, 1 pair
+    MOD.CoopSync()
+    expect(not MOD.GetCoop().relayLost, "relais frais : pas de desync")
+    tickFor(8)                            -- ts fige, un seul pair (l'ancien angle mort)
+    expect(MOD.GetCoop().relayLost, "un relais fige doit etre detecte MEME a peerCount==1")
+    killAll()
+    tickFor(1)
+    expect(MOD.GetPhase() ~= "wave1", "a 1 pair aussi, relais mort => compte local, la vague ne fige pas")
+end })
+
 table.insert(SCENARIOS, { name = "co-op : quitter retablit le solo", fn = function()
     loadMod()
     MOD.HostCoop("T", "h")

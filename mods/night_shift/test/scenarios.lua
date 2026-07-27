@@ -672,6 +672,23 @@ table.insert(SCENARIOS, { name = "co-op : relais vivant (ts qui avance) ne decle
     expect(not NS.GetCoop().relayLost, "un relais qui reecrit (ts avance) ne doit jamais etre 'perdu'")
 end })
 
+table.insert(SCENARIOS, { name = "co-op : relais mort a 1 SEUL pair -> desync detecte (pas d'angle mort)", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(6)
+    coopDriveToType("wave")
+    writeCoopIn({ peerCount = 1, teamRemaining = 2, mission = "ns06" })   -- relais vivant, 1 pair
+    NS.CoopSync()
+    expect(not NS.GetCoop().relayLost, "relais frais : pas de desync")
+    tickFor(8, 0.5)                       -- ts fige, et il n'y a qu'UN pair (l'ancien angle mort)
+    expect(NS.GetCoop().relayLost, "un relais fige doit etre detecte MEME a peerCount==1")
+    local idxBefore = NS.GetPhaseInfo().index
+    killAll()
+    tickFor(1, 0.5)
+    expect(NS.GetPhaseInfo().index ~= idxBefore or NS.GetStatus() ~= "running",
+        "a 1 pair aussi, relais mort => compte local, la vague ne fige pas")
+end })
+
 table.insert(SCENARIOS, { name = "co-op : quitter la session retablit le solo", fn = function()
     NS = loadMod()
     NS.HostCoop("T", "h")
