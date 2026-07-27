@@ -1,0 +1,70 @@
+[size=6][b]⚡ SURTENSION[/b][/size]
+[size=3][i]A fully scripted story mission for Cyberpunk 2077 — with a twist, a boss, and two endings. / Une mission scénarisée complète — avec twist, boss et double fin.[/i][/size]
+
+[line]
+
+[size=5][b]🇬🇧 English[/b][/size]
+
+"Regina" calls: a Maelstrom netrunner is siphoning the Petrochem substation in Arroyo. Cut the siphon before the district blows. Except nothing is what it seems.
+
+[b]What you get[/b] (~12 minutes, replayable):
+[list]
+[*]📞 Cinematic intro call in slow motion
+[*]🔫 Combat waves with an electric storm rolling over the district
+[*]💻 A hack you must sustain [i]under fire[/i]
+[*]🌒 A story twist that plunges Night City into a blackout — caused by [i]you[/i]
+[*]⚠️ A boss fight in the dark: [b]GRIDLOCK[/b], a cyberpsycho carrying the core of a rogue AI
+[*]🎬 A cinematic finale where the AI asks you the question face to face
+[*]☀🌑 [b]Two endings, chosen with one keypress[/b]: relight Night City (dawn, clear skies, a Quadra Type-66 Avenger in your garage) or keep the core and let the city sleep (60,000 eddies + the Yinglong EMP SMG)
+[*]🖥️ Persistent HUD (objective, hack progress, hostiles counter)
+[*]📊 Persistent stats with best-time records
+[*]🌍 Full English + French localization (auto-detected)
+[/list]
+
+[b]Requirements[/b]
+[list]
+[*][url=https://www.nexusmods.com/cyberpunk2077/mods/107]Cyber Engine Tweaks[/url] 1.31+
+[*][url=https://www.nexusmods.com/cyberpunk2077/mods/7780]Codeware[/url] 1.5+
+[/list]
+
+[b]Installation[/b]
+[list=1]
+[*]Extract the archive into your game folder (or install with Vortex) — it ships the full [font=Courier New]bin/x64/plugins/cyber_engine_tweaks/mods/surtension[/font] path.
+[*]In game, open CET → [b]Bindings[/b] → assign [b]three[/b] hotkeys: start mission, Finale ☀ LIGHT, Finale 🌑 DARK.
+[*][b]First run:[/b] use the "print position" hotkey to calibrate the three mission points in [font=Courier New]init.lua[/font]'s CONFIG for your preferred spot (defaults target Arroyo's industrial zone — verify in game, especially the z coordinate).
+[/list]
+No hotkeys bound for the finale? After 35 seconds the mission falls back to a walk-to-your-ending choice. Everything is also drivable from the CET console: [font=Courier New]GetMod("surtension").Start()[/font], [font=Courier New].Choose("light"|"dark")[/font], [font=Courier New].Jump("boss")[/font], [font=Courier New].GetStats()[/font].
+
+[b]Safety / robustness[/b] — the mission cleans up after itself: death or save-reload cancels it properly (no stuck slow-mo, no leaked effects), non-lethal takedowns count, anti-softlock timeouts cover stuck spawns, and "Reload All Mods" mid-mission tears everything down.
+
+[line]
+
+[size=5][b]🇫🇷 Français[/b][/size]
+
+« Regina » t'appelle : un netrunner de Maelstrom siphonne la sous-station Petrochem d'Arroyo. Coupe le siphon avant que le district saute. Sauf que rien n'est ce qu'il paraît.
+
+[b]Au programme[/b] (~12 minutes, rejouable) :
+[list]
+[*]📞 Appel d'intro cinématique au ralenti
+[*]🔫 Vagues de combat sous un orage électrique
+[*]💻 Un piratage à maintenir [i]sous le feu[/i]
+[*]🌒 Un twist qui plonge Night City dans le blackout — par [i]ta[/i] faute
+[*]⚠️ Un boss dans le noir : [b]GRIDLOCK[/b], cyberpsycho porteur du cœur d'une IA sauvage
+[*]🎬 Une finale cinématique où l'IA te pose la question en face
+[*]☀🌑 [b]Deux fins, choisies d'une touche[/b] : rallumer Night City (aube, ciel dégagé, une Quadra Type-66 Avenger au garage) ou garder le cœur et laisser la ville dormir (60 000 eddies + le SMG EMP Yinglong)
+[*]🖥️ HUD persistant (objectif, progression du hack, compteur d'hostiles)
+[*]📊 Stats persistantes avec records de temps
+[*]🌍 Localisation FR + EN (détection auto)
+[/list]
+
+[b]Prérequis[/b] : [url=https://www.nexusmods.com/cyberpunk2077/mods/107]Cyber Engine Tweaks[/url] 1.31+ et [url=https://www.nexusmods.com/cyberpunk2077/mods/7780]Codeware[/url] 1.5+.
+
+[b]Installation[/b] : extraire l'archive dans le dossier du jeu (ou via Vortex), puis dans CET → [b]Bindings[/b], assigner [b]trois[/b] touches : démarrage, Finale ☀ LUMIÈRE, Finale 🌑 NOIR. [b]Première run :[/b] recale les trois points de mission du CONFIG avec la touche « afficher ma position » (les valeurs par défaut visent la zone industrielle d'Arroyo — vérifie en jeu, surtout le z).
+
+Sans touches de finale, la mission bascule après 35 s sur un choix par déplacement. Tout est aussi pilotable en console : [font=Courier New]GetMod("surtension").Start()[/font], [font=Courier New].Choose("lumière"|"noir")[/font], [font=Courier New].Jump("boss")[/font], [font=Courier New].GetStats()[/font].
+
+[b]Robustesse[/b] — la mission nettoie derrière elle : mort ou rechargement l'annulent proprement (pas de ralenti bloqué, pas d'effet qui fuit), les takedowns non létaux comptent, des timeouts anti soft-lock couvrent les spawns coincés, et « Reload All Mods » en pleine mission démonte tout.
+
+[line]
+
+[size=2]Not affiliated with CD PROJEKT RED. "Cyberpunk 2077" and "Night City" are trademarks of CD PROJEKT S.A. — Source: the mod ships readable, commented Lua; tweak everything in the CONFIG block (enemies, rewards, timings, locations).[/size]

@@ -1,0 +1,698 @@
+--------------------------------------------------------------------------
+-- Scénarios de simulation de NIGHT SHIFT (réutilise les stubs SURTENSION)
+-- Le pilote autoplay() sait terminer n'importe quelle mission en lisant
+-- GetPhaseInfo() — même moteur que jouerait un humain, en accéléré.
+--------------------------------------------------------------------------
+
+-- Par défaut les tests jouent en sélection libre : les tests de mécanique
+-- et de conséquences ne dépendent pas du déverrouillage de campagne, qui
+-- est couvert par des scénarios dédiés (lesquels réactivent le mode
+-- campagne avec SetFreePlay(false)).
+local _origLoadMod = loadMod
+function loadMod()
+    local m = _origLoadMod()
+    m.SetFreePlay(true)
+    return m
+end
+
+-- Invariants de fin : le monde doit être rendu propre
+local function expectCleanWorld(context)
+    context = context and (" [" .. context .. "]") or ""
+    expect(not SIM.effects["GameplayRestriction.NoMovement"], "verrou de mouvement résiduel" .. context)
+    expect(not SIM.effects["BaseStatusEffect.CommsNoiseJam"], "brouillage résiduel" .. context)
+    expect(SIM.dilation == 0 or SIM.dilation == nil, "dilatation résiduelle" .. context)
+    expect(activeMappins() == 0, "mappins résiduels" .. context)
+    local live = 0
+    for _, e in pairs(SIM.entities) do
+        if not e.deleted and not e.dead and not e.defeated then live = live + 1 end
+    end
+    expect(live == 0, "entités vivantes résiduelles" .. context)
+end
+
+-- Joue une mission de bout en bout via l'API publique.
+-- choiceMode : "a" | "b" | "walk_a" | "walk_b" | "timeout" (fin secrète)
+function autoplay(missionIndex, choiceMode)
+    choiceMode = choiceMode or "a"
+    NS = loadMod()
+    expect(NS.Start(missionIndex), "démarrage refusé pour la mission " .. tostring(missionIndex))
+    local guard = 0
+    while NS.GetStatus() ~= "done" and NS.GetStatus() ~= "idle" do
+        guard = guard + 1
+        expect(guard < 20000, "autoplay bloqué (mission " .. tostring(missionIndex)
+            .. ", phase " .. tostring(NS.GetPhaseInfo().type) .. ")")
+        local info = NS.GetPhaseInfo()
+        if info.status == "epilogue" then
+            tick(0.5)
+        elseif info.type == "dialogue" then
+            tick(0.5)
+        elseif info.type == "goto" or info.type == "race" or info.type == "collect" then
+            if info.target then teleport(info.target) end
+            tick(0.2)
+        elseif info.type == "hold" then
+            if info.target then teleport(info.target) end
+            tick(0.5)
+            killAll()   -- on abat les harceleurs dès qu'ils apparaissent
+        elseif info.type == "wave" or info.type == "boss" or info.type == "defend" then
+            tick(0.5)
+            killAll()
+        elseif info.type == "choice" then
+            if choiceMode == "a" or choiceMode == "b" then
+                press("ns_choice_" .. choiceMode)
+            elseif choiceMode == "timeout" then
+                tickFor(50)   -- laisse le timeout (45 s max) s'écouler
+            elseif choiceMode == "walk_a" or choiceMode == "walk_b" then
+                tickFor(40)   -- déclenche la bascule marche
+                local i2 = NS.GetPhaseInfo()
+                local target = (choiceMode == "walk_a") and i2.optionA or i2.optionB
+                expect(target, "cible de choix par marche absente")
+                teleport(target)
+                tick(0.2)
+            end
+        else
+            tick(0.5)
+        end
+    end
+    expect(NS.GetStatus() == "done", "mission " .. tostring(missionIndex)
+        .. " non terminée (statut " .. NS.GetStatus() .. ")")
+    expectCleanWorld("mission " .. tostring(missionIndex))
+    local id = NS.GetMissionId(missionIndex)
+    local stats = NS.GetStats()
+    expect((stats["done_" .. id] or 0) >= 1, "complétion non comptée pour " .. id)
+    expect(sawMessage("MISSION ACCOMPLIE") or sawMessage("MISSION ACCOMPLISHED"),
+        "message de fin absent pour " .. id)
+    return stats
+end
+
+SCENARIOS = {}
+
+-- Les 15 missions, de bout en bout (choix A par défaut quand il y en a un)
+for i = 1, 15 do
+    table.insert(SCENARIOS, {
+        name = string.format("mission %02d : autoplay complet", i),
+        fn = function() autoplay(i) end,
+    })
+end
+
+-- Variantes de choix ------------------------------------------------------
+
+table.insert(SCENARIOS, { name = "ns07 : choix B (vendre le shard) au hotkey", fn = function()
+    local stats = autoplay(7, "b")
+    expect(SIM.inventory["Items.money"] == 22000, "récompense du choix B incorrecte")
+end })
+
+table.insert(SCENARIOS, { name = "ns09 : choix B par MARCHE (secours sans touche)", fn = function()
+    autoplay(9, "walk_b")
+    expect(SIM.inventory["Items.money"] == 4000, "récompense du choix B (marche) incorrecte")
+    expect(sawMessage("clignotent") or sawMessage("blink"), "épilogue du choix B absent")
+end })
+
+table.insert(SCENARIOS, { name = "ns15 : FIN SECRÈTE déblocable — méritée par 2 choix Signal", fn = function()
+    -- on gagne la confiance de VOLT : ns09 B (épargner la secte) + ns14 B (laisser chanter)
+    autoplay(9, "b")
+    autoplay(14, "b")
+    local align = NS.GetAlignment()
+    expect(align.signal == 2, "alignement Signal attendu à 2, obtenu " .. tostring(align.signal))
+    SIM.inventory = {}   -- isole les récompenses de CODA
+    autoplay(15, "timeout")
+    expect(sawMessage("COMMUNION"), "fin secrète non déclenchée malgré l'alignement")
+    expect(sawMessage("je te couvre") or sawMessage("got you"), "intro variante Signal absente")
+    expect(sawMessage("Pas ceux-là") or sawMessage("Not these ones"), "l'assistance de VOLT au boss est absente")
+    expect(SIM.inventory["Items.Preset_Yinglong_Default"] == 1, "récompense secrète absente")
+    expect((SIM.inventory["Items.money"] or 0) == 0, "la fin secrète ne paie pas en eddies")
+end })
+
+table.insert(SCENARIOS, { name = "ns15 : fin secrète VERROUILLÉE sans alignement (secours marche)", fn = function()
+    NS = loadMod()
+    NS.Start(15)
+    local guard = 0
+    while NS.GetStatus() == "running" and NS.GetPhaseInfo().type ~= "choice" do
+        guard = guard + 1
+        expect(guard < 20000, "CODA bloquée avant le choix")
+        local info = NS.GetPhaseInfo()
+        if info.type == "goto" then teleport(info.target); tick(0.2)
+        elseif info.type == "boss" then tick(0.5); killAll()
+        else tick(0.5) end
+    end
+    expect(sawMessage("Débrouille-toi") or sawMessage("Handle it"), "intro variante Marché/neutre absente")
+    tickFor(50)   -- timeout 45 s dépassé
+    expect(NS.GetStatus() == "running", "sans alignement, l'attente ne doit PAS conclure la mission")
+    expect(NS.GetPhaseInfo().walk == true, "le secours par marche doit s'activer à la place")
+    expect(not sawMessage("COMMUNION"), "la fin secrète ne doit pas être accessible sans la mériter")
+    NS.Abort()
+end })
+
+table.insert(SCENARIOS, { name = "ns15 : fin A bonifiée par la fidélité (caches de VOLT)", fn = function()
+    autoplay(9, "b")
+    autoplay(14, "b")
+    SIM.inventory = {}
+    autoplay(15, "a")
+    expect(SIM.inventory["Items.money"] == 25000,
+        "fin A + Signal>=2 : 15000 + 10000 de bonus attendus, obtenu " .. tostring(SIM.inventory["Items.money"]))
+    expect(sawMessage("caches") or sawMessage("stashes"), "message du bonus de fidélité absent")
+end })
+
+table.insert(SCENARIOS, { name = "ns15 : fin A au hotkey (VOLT s'éteint en paix)", fn = function()
+    autoplay(15, "a")
+    expect(SIM.inventory["Items.money"] == 15000, "récompense fin A incorrecte")
+    expect(sawMessage("la fin") or sawMessage("the ending"), "épilogue fin A absent")
+end })
+
+-- Conséquences croisées entre missions ------------------------------------
+
+table.insert(SCENARIOS, { name = "conséquence : ns07 B → le Courtier te reconnaît et renforce ns12", fn = function()
+    autoplay(7, "b")   -- vendre le shard au marché noir
+    local before = spawnedCount()
+    autoplay(12)
+    expect(sawMessage("déjà fait affaire") or sawMessage("done business"),
+        "le dialogue de reconnaissance du courtier est absent")
+    expect(sawMessage("prévu large") or sawMessage("planned big"), "l'annonce des renforts est absente")
+    -- embuscade renforcée : 5 de base + 2 équipes supplémentaires
+    expect(spawnedCount() - before == 7,
+        "embuscade renforcée attendue (7 spawns), obtenu " .. (spawnedCount() - before))
+end })
+
+table.insert(SCENARIOS, { name = "conséquence : ns07 A → ns12 standard (pas de reconnaissance)", fn = function()
+    autoplay(7, "a")   -- rendre le shard au NCPD
+    local before = spawnedCount()
+    autoplay(12)
+    expect(not sawMessage("déjà fait affaire") and not sawMessage("done business"),
+        "le courtier ne doit pas te reconnaître")
+    expect(spawnedCount() - before == 5,
+        "embuscade standard attendue (5 spawns), obtenu " .. (spawnedCount() - before))
+end })
+
+table.insert(SCENARIOS, { name = "conséquence : ns09 B → ns10 révèle la secte, ns14 allégée", fn = function()
+    autoplay(9, "b")   -- épargner les Enfants du Courant
+    autoplay(10)
+    expect(sawMessage("bougies LED encore tièdes") or sawMessage("candles still warm"),
+        "l'épilogue variante (la secte) est absent de ns10")
+    local before = spawnedCount()
+    autoplay(14, "b")
+    expect(sawMessage("chant monte") or sawMessage("chant rises"),
+        "la diversion des Enfants est absente de ns14")
+    expect(spawnedCount() - before == 4,
+        "garde voodoo allégée attendue (4 spawns), obtenu " .. (spawnedCount() - before))
+end })
+
+table.insert(SCENARIOS, { name = "conséquence : ns09 A → ns10 pointe le courtier, ns14 complète", fn = function()
+    autoplay(9, "a")   -- disperser la secte
+    autoplay(10)
+    expect(sawMessage("sous-traitant") or sawMessage("subcontractor"),
+        "l'épilogue par défaut (piste du courtier) est absent de ns10")
+    local before = spawnedCount()
+    autoplay(14, "a")
+    expect(spawnedCount() - before == 6,
+        "garde voodoo complète attendue (6 spawns), obtenu " .. (spawnedCount() - before))
+end })
+
+table.insert(SCENARIOS, { name = "conséquence : alignement Marché → CODA durcie (renforts Arasaka)", fn = function()
+    autoplay(7, "b")
+    autoplay(9, "a")   -- 2 choix Marché
+    local align = NS.GetAlignment()
+    expect(align.eddies == 2, "alignement Marché attendu à 2")
+    autoplay(15, "b")
+    expect(sawMessage("financé leurs renseignements") or sawMessage("funded their intel"),
+        "les renforts conditionnels de CODA sont absents")
+end })
+
+-- Optimisation : HUD depuis le cache, sans requête jeu au rendu -----------
+
+table.insert(SCENARIOS, { name = "optim : le HUD se peint depuis le cache, pile ImGui équilibrée", fn = function()
+    NS = loadMod()
+    NS.SetFreePlay(true)
+    NS.Start(1)
+    teleport({ x = -1180, y = 1640, z = 28 })   -- vers l'objectif de ns01
+    tickFor(2, 0.1)   -- quelques ticks de logique remplissent le cache HUD
+
+    -- le rendu ne fait que des appels ImGui : plusieurs frames de dessin
+    -- sans nouveau tick de logique doivent rester équilibrées
+    local pushes = SIM.imgui.push
+    draw(); draw(); draw()
+    expect(SIM.imgui.push > pushes, "le HUD aurait dû se dessiner depuis le cache")
+    expect(SIM.imgui.push == SIM.imgui.pop, "pile de styles ImGui déséquilibrée")
+    expect(SIM.imgui.beginN == SIM.imgui.endN, "Begin/End ImGui déséquilibrés")
+
+    -- pas de HUD par-dessus l'écran de mort : sans joueur, aucun dessin
+    SIM.player.present = false
+    local p2 = SIM.imgui.push
+    draw()
+    expect(SIM.imgui.push == p2, "le HUD ne doit pas se dessiner sans joueur")
+    SIM.player.present = true
+    NS.Abort()
+end })
+
+table.insert(SCENARIOS, { name = "optim : erreur ImGui en rendu → HUD coupé, pile rééquilibrée", fn = function()
+    NS = loadMod()
+    NS.SetFreePlay(true)
+    NS.Start(7)   -- ns07 contient une phase hold (barre de progression)
+    -- amène jusqu'à la phase hold
+    local guard = 0
+    while NS.GetStatus() == "running" and NS.GetPhaseInfo().type ~= "hold" do
+        guard = guard + 1; expect(guard < 20000, "phase hold non atteinte")
+        local info = NS.GetPhaseInfo()
+        if info.target then teleport(info.target) end
+        tick(0.2)
+    end
+    expect(NS.GetPhaseInfo().type == "hold", "on doit être en phase hold")
+    tickFor(1, 0.1)   -- progression > 0 → la barre sera peinte
+    SIM.imgui.progressThrows = true
+    draw()
+    expect(sawLog("HUD désactivé"), "la panne ImGui n'a pas été loguée")
+    expect(SIM.imgui.push == SIM.imgui.pop, "pile non rééquilibrée après la panne")
+    expect(SIM.imgui.beginN == SIM.imgui.endN, "Begin/End non rééquilibrés")
+    local p = SIM.imgui.push
+    draw()
+    expect(SIM.imgui.push == p, "le HUD doit rester coupé après une panne")
+    SIM.imgui.progressThrows = false
+    NS.Abort()
+end })
+
+table.insert(SCENARIOS, { name = "optim : la logique throttlée préserve la complétion", fn = function()
+    -- des frames très courtes (delta < pollInterval) doivent quand même,
+    -- une fois cumulées, faire avancer la mission
+    NS = loadMod()
+    NS.SetFreePlay(true)
+    NS.Start(1)
+    teleport({ x = -1180, y = 1640, z = 28 })
+    for _ = 1, 200 do tick(0.016) end   -- ~3,2 s en frames de 60 fps
+    expect(NS.GetStatus() ~= "idle", "la mission ne doit pas avoir été annulée")
+    -- on a dépassé le dialogue d'intro et atteint le combat (wave)
+    expect(NS.GetPhaseInfo().type == "wave" or NS.GetStatus() == "running",
+        "la logique throttlée doit progresser malgré des deltas minuscules")
+    NS.Abort()
+end })
+
+-- Campagne : progression, journal, bilan -----------------------------------
+
+table.insert(SCENARIOS, { name = "campagne : déverrouillage progressif des missions", fn = function()
+    NS = loadMod()
+    NS.SetFreePlay(false)   -- mode campagne réel
+    expect(NS.IsUnlocked(1), "ns01 doit être ouverte d'entrée")
+    expect(not NS.IsUnlocked(2), "ns02 doit être verrouillée au départ")
+    expect(not NS.IsUnlocked(15), "CODA doit être verrouillée au départ")
+    expect(not NS.Start(2), "démarrer une mission verrouillée doit être refusé")
+    expect(NS.GetStatus() == "idle", "un démarrage refusé ne doit rien lancer")
+    expect(sawMessage("verrouillé") or sawMessage("locked"), "message de verrou absent")
+
+    autoplay(1)   -- termine ns01 (l'autoplay recharge le mod en free-play)
+    NS = loadMod(); NS.SetFreePlay(false)
+    expect(NS.IsUnlocked(2), "ns02 doit s'ouvrir après ns01")
+    expect(NS.IsUnlocked(3), "ns03 doit s'ouvrir après ns01")
+    expect(not NS.IsUnlocked(4), "ns04 attend encore ns02")
+end })
+
+table.insert(SCENARIOS, { name = "campagne : le journal reflète statut, choix et verrou", fn = function()
+    autoplay(7, "b")   -- termine ns07, choix b
+    NS = loadMod(); NS.SetFreePlay(false)
+    local j = NS.GetJournal()
+    expect(j[7].status == "done", "ns07 doit être marquée terminée")
+    expect(j[7].choice == "b", "le choix de ns07 doit apparaître au journal")
+    expect(j[12].status == "open", "ns12 doit s'ouvrir après ns07")
+    expect(j[15].status == "locked", "CODA doit rester verrouillée sans ses prérequis")
+    expect(j[1].status == "open", "ns01 doit rester accessible")
+end })
+
+table.insert(SCENARIOS, { name = "campagne : bilan final généré (voie Signal)", fn = function()
+    autoplay(9, "b")    -- signal
+    autoplay(14, "b")   -- signal
+    autoplay(15, "a")   -- CODA fin A (align signal) → bilan
+    expect(sawMessage("BILAN DE CAMPAGNE"), "l'en-tête du bilan est absent")
+    expect(sawMessage("3/15"), "le compte de contrats du bilan est faux")
+    expect(sawMessage("Signal 3"), "l'alignement du bilan est faux")
+    expect(sawMessage("protégé"), "la conclusion de la voie Signal est absente")
+    expect(sawMessage("Rendre le fragment"), "le dernier mot (choix CODA) est absent du bilan")
+end })
+
+table.insert(SCENARIOS, { name = "campagne : bilan final généré (voie Marché)", fn = function()
+    autoplay(7, "b")    -- marché
+    autoplay(9, "a")    -- marché
+    autoplay(15, "b")   -- CODA fin B (align marché)
+    expect(sawMessage("BILAN DE CAMPAGNE"), "l'en-tête du bilan est absent")
+    expect(sawMessage("Marché 3"), "l'alignement Marché du bilan est faux")
+    expect(sawMessage("monnayé"), "la conclusion de la voie Marché est absente")
+    expect(sawMessage("Vendre le fragment"), "le dernier mot (choix CODA B) est absent")
+end })
+
+-- Échecs et interruptions -------------------------------------------------
+
+table.insert(SCENARIOS, { name = "ns03 : échec de course (timeout) → nettoyage propre", fn = function()
+    NS = loadMod()
+    NS.Start(3)
+    tickFor(125)   -- timeLimit = 120 s sans bouger
+    expect(NS.GetStatus() == "idle", "l'échec de course doit rendre la main")
+    expect(sawMessage("MISSION ÉCHOUÉE") or sawMessage("MISSION FAILED"), "message d'échec absent")
+    expectCleanWorld("échec course")
+    local stats = NS.GetStats()
+    expect((stats.plays_ns03 or 0) == 1 and (stats.done_ns03 or 0) == 0,
+        "un échec ne doit pas compter comme complétion")
+end })
+
+table.insert(SCENARIOS, { name = "ns05 : abandon en pleine défense → nettoyage propre", fn = function()
+    NS = loadMod()
+    NS.Start(5)
+    teleport({ x = -900, y = 250, z = 8 }); tick(0.2)   -- goto
+    tickFor(10)   -- la défense a commencé, des scavs ont spawné
+    press("ns_abort")
+    expect(NS.GetStatus() == "idle", "abandon inopérant")
+    expectCleanWorld("abandon défense")
+end })
+
+table.insert(SCENARIOS, { name = "ns10 : perte de session en plein boss → annulation propre", fn = function()
+    NS = loadMod()
+    NS.Start(10)
+    teleport({ x = -1522, y = -978, z = 25 }); tick(0.2)
+    tickFor(12)   -- dialogue glitché puis boss lancé
+    SIM.player.present = false
+    tickFor(1)
+    SIM.player.present = true
+    tick(0.1)
+    expect(NS.GetStatus() == "idle", "perte de session non gérée")
+    expect(sawMessage("Session interrompue") or sawMessage("Session interrupted"),
+        "message de session absent")
+    expectCleanWorld("perte de session")
+end })
+
+table.insert(SCENARIOS, { name = "négatif : double démarrage refusé, choix hors phase inerte", fn = function()
+    NS = loadMod()
+    NS.Start(1)
+    expect(not NS.Start(2), "un second démarrage doit être refusé")
+    press("ns_choice_a")   -- pas de phase choice en cours
+    expect(NS.GetStatus() == "running", "un choix hors phase ne doit rien casser")
+    expect((SIM.inventory["Items.money"] or 0) == 0, "aucune récompense ne doit être versée")
+end })
+
+table.insert(SCENARIOS, { name = "stats : cumul multi-missions et record persistant", fn = function()
+    autoplay(1)
+    NS = loadMod()   -- rechargement : stats relues du disque
+    local stats = NS.GetStats()
+    expect((stats.plays_ns01 or 0) == 1 and (stats.done_ns01 or 0) == 1, "stats ns01 non persistées")
+    expect((stats.best_ns01 or 0) > 0, "record ns01 absent")
+    local s2 = autoplay(2)
+    expect((s2.done_ns02 or 0) == 1, "stats ns02 absentes")
+    expect((s2.done_ns01 or 0) == 1, "le cumul multi-missions doit conserver ns01")
+end })
+
+table.insert(SCENARIOS, { name = "audit : aucun choix ne se valide tout seul au timeout (ns07/ns09/ns14)", fn = function()
+    for _, mi in ipairs({ 7, 9, 14 }) do
+        local workNS = loadMod()
+        workNS.Start(mi)
+        local guard = 0
+        -- avance jusqu'à la phase choice avec le pilote standard
+        while workNS.GetStatus() == "running" and workNS.GetPhaseInfo().type ~= "choice" do
+            guard = guard + 1
+            expect(guard < 20000, "audit bloqué avant la phase choice (mission " .. mi .. ")")
+            local info = workNS.GetPhaseInfo()
+            if info.type == "goto" or info.type == "race" or info.type == "collect" then
+                if info.target then teleport(info.target) end
+                tick(0.2)
+            elseif info.type == "hold" then
+                if info.target then teleport(info.target) end
+                tick(0.5); killAll()
+            elseif info.type == "wave" or info.type == "boss" or info.type == "defend" then
+                tick(0.5); killAll()
+            else
+                tick(0.5)
+            end
+        end
+        expect(workNS.GetPhaseInfo().type == "choice", "phase choice non atteinte (mission " .. mi .. ")")
+        tickFor(40)   -- timeout passé, bascule marche activée
+        expect(workNS.GetStatus() == "running",
+            "mission " .. mi .. " : une fin s'est validée toute seule au timeout !")
+        workNS.Abort()
+    end
+end })
+
+table.insert(SCENARIOS, { name = "sélection : cycle des 15 missions au hotkey", fn = function()
+    NS = loadMod()
+    for i = 1, 15 do press("ns_next") end
+    -- après 15 pressions on est revenu à la mission 1
+    expect(sawMessage("Échos") or sawMessage("Echoes"), "le cycle de sélection doit repasser par la mission 1")
+    press("ns_start")
+    expect(NS.GetStatus() == "running", "démarrage via sélection inopérant")
+    press("ns_abort")
+end })
+
+-- CO-OP -------------------------------------------------------------------
+-- Le relais réseau est simulé en écrivant coop_in.json (ce que le relais
+-- livrerait) et en lisant coop_out.json (ce que le mod publie).
+
+COOP_TS = 100000               -- battement de cœur simulé du relais (avance à chaque écriture)
+function writeCoopIn(o)
+    o = o or {}
+    COOP_TS = o.ts or (COOP_TS + 1)   -- un ts frais = relais vivant ; figer o.ts = relais mort
+    local f = io.open("coop_in.json", "w")
+    f:write(string.format(
+        '{"schema":1,"code":"T","host":"h","peerCount":%d,"mission":"%s",' ..
+        '"phaseIndex":%d,"phaseType":"%s","objective":"%s",' ..
+        '"teamRemaining":%d,"resolved":"%s","ts":%d,' ..
+        '"selfPingMs":%d,"worstPingMs":%d}',
+        o.peerCount or 2, o.mission or "", o.phaseIndex or 0, o.phaseType or "",
+        o.objective or "", o.teamRemaining or 0, o.resolved or "", COOP_TS,
+        o.selfPingMs or 0, o.worstPingMs or 0))
+    f:close()
+end
+
+function readCoopOut()
+    local f = io.open("coop_out.json", "r")
+    if not f then return "" end
+    local raw = f:read("*a"); f:close()
+    return raw or ""
+end
+
+function coopDriveToType(ptype)
+    local guard = 0
+    while NS.GetStatus() == "running" and NS.GetPhaseInfo().type ~= ptype do
+        guard = guard + 1
+        expect(guard < 20000, "drive co-op bloque (" .. tostring(NS.GetPhaseInfo().type) .. ")")
+        local info = NS.GetPhaseInfo()
+        local t = info.type
+        if t == "goto" or t == "race" or t == "collect" then
+            if info.target then teleport(info.target) end
+            tick(0.2)
+        elseif t == "hold" then
+            if info.target then teleport(info.target) end
+            tick(0.5); killAll()
+        elseif t == "wave" or t == "boss" or t == "defend" then
+            tick(0.5); killAll()
+        else
+            tick(0.5)
+        end
+    end
+end
+
+table.insert(SCENARIOS, { name = "co-op : off par defaut -> aucune synchro (solo intact)", fn = function()
+    NS = loadMod()
+    local c = NS.GetCoop()
+    expect(not c.active, "le co-op doit etre off par defaut")
+    expect(c.teamRemaining == nil, "teamRemaining doit etre nil en solo")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : l'hote publie mission/phase dans coop_out", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(6)
+    coopDriveToType("wave")
+    NS.CoopSync()
+    local raw = readCoopOut()
+    expect(raw:find('"role":"host"'), "coop_out devrait indiquer le role hote")
+    expect(raw:find('"mission":"ns06"'), "coop_out devrait publier la mission courante")
+    expect(raw:find('"phaseType":"wave"'), "coop_out devrait publier le type de phase")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : une vague attend que l'EQUIPE ait nettoye", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(6)
+    coopDriveToType("wave")
+    local idxBefore = NS.GetPhaseInfo().index
+    writeCoopIn({ teamRemaining = 3, mission = "ns06" })
+    NS.CoopSync()
+    killAll()
+    tickFor(3, 0.5)
+    expect(NS.GetPhaseInfo().index == idxBefore,
+        "la vague ne doit PAS avancer tant que l'equipe n'a pas nettoye")
+    writeCoopIn({ teamRemaining = 0, mission = "ns06" })
+    NS.CoopSync()
+    tickFor(1, 0.5)
+    expect(NS.GetPhaseInfo().index > idxBefore or NS.GetStatus() ~= "running",
+        "la vague doit avancer une fois l'equipe au complet")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : le HUD d'equipe se dessine (pile ImGui equilibree)", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(6)
+    coopDriveToType("wave")
+    writeCoopIn({ teamRemaining = 5, mission = "ns06" })
+    NS.CoopSync()
+    tick(0.1)
+    draw()
+    expect((SIM.imgui.push or 0) > 0, "le HUD co-op aurait du se dessiner")
+    expect(SIM.imgui.push == SIM.imgui.pop, "pile ImGui desequilibree en co-op")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : le joiner suit la mission lancee par l'hote", fn = function()
+    NS = loadMod()
+    NS.JoinCoop("T", "j")
+    writeCoopIn({ mission = "ns01" })
+    NS.CoopSync()
+    tick(0.1)
+    expect(NS.GetStatus() == "running", "le joiner aurait du demarrer la mission")
+    expect(NS.GetPhaseInfo().mission == "ns01", "le joiner doit suivre ns01")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : le choix se resout par VOTE", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(9)
+    coopDriveToType("choice")
+    press("ns_choice_a")
+    expect(NS.GetStatus() == "running", "un vote ne doit pas conclure immediatement")
+    expect(sawMessage("Vote"), "le message de vote est absent")
+    expect(readCoopOut():find('"vote":"a"'), "le vote devrait etre publie dans coop_out")
+    writeCoopIn({ mission = "ns09", resolved = "a" })
+    NS.CoopSync()
+    tickFor(2, 0.5)
+    expect(NS.GetChoices()["ns09"] == "a", "le choix resolu par vote doit etre applique")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : ping eleve -> avertissement discret de latence a l'ecran", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(6)
+    coopDriveToType("wave")
+    -- l'hote voit le PIRE ping des joueurs connectes : 180 ms > seuil (120)
+    writeCoopIn({ teamRemaining = 3, mission = "ns06", worstPingMs = 180, selfPingMs = 0 })
+    NS.CoopSync()
+    tick(0.1)
+    draw()
+    expect(sawHudText("180"), "l'avertissement de latence devrait afficher le ping du joueur")
+    expect(sawHudText("Latence") or sawHudText("Latency"),
+        "l'avertissement de latence devrait apparaitre au-dela du seuil")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : ping correct -> aucun avertissement (discret)", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(6)
+    coopDriveToType("wave")
+    writeCoopIn({ teamRemaining = 3, mission = "ns06", worstPingMs = 40, selfPingMs = 0 })
+    NS.CoopSync()
+    tick(0.1)
+    draw()
+    expect(not sawHudText("Latence") and not sawHudText("Latency"),
+        "aucun avertissement ne doit s'afficher quand le ping est bon")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : le joiner voit SA latence vers l'hote", fn = function()
+    NS = loadMod()
+    NS.JoinCoop("T", "j")
+    writeCoopIn({ mission = "ns01", selfPingMs = 200, worstPingMs = 200 })
+    NS.CoopSync()
+    tickFor(1, 0.1)              -- démarrage (suivi de l'hôte) puis refresh du HUD
+    expect(NS.GetStatus() == "running", "le joiner aurait du demarrer la mission")
+    draw()
+    expect(sawHudText("200"), "le joiner devrait voir sa propre latence (selfPingMs)")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : pas d'avertissement de ping en solo", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.Start(6)
+    tick(0.1)
+    draw()
+    expect(not sawHudText("Latence") and not sawHudText("Latency"),
+        "le solo ne doit jamais afficher d'avertissement de latence")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : choix sans vote conclu -> filet de securite (jamais fige)", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(9)
+    coopDriveToType("choice")
+    expect(SIM.effects["GameplayRestriction.NoMovement"], "verrou de choix attendu en co-op")
+    writeCoopIn({ mission = "ns09" })    -- relais actif, AUCUN vote resolu
+    NS.CoopSync()
+    tickFor(40, 0.5)                     -- le vote ne conclut jamais (timeout 35 s)
+    expect(not SIM.effects["GameplayRestriction.NoMovement"],
+        "co-op fige : le joueur doit etre debloque au bout du timeout")
+    expect((activeMappins() or 0) >= 1, "marqueurs de secours attendus")
+    -- en mode secours, le hotkey applique DIRECTEMENT (plus de vote)
+    press("ns_choice_a")
+    expect(NS.GetChoices()["ns09"] == "a",
+        "en secours co-op, un choix doit s'appliquer directement")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : un vote 'secret' non merite est refuse (gate CODA)", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(15)
+    coopDriveToType("choice")
+    -- align_signal < 2 sur une run libre : la fin secrete ne doit PAS
+    -- s'appliquer meme si le relais renvoyait resolved="secret"
+    writeCoopIn({ mission = "ns15", resolved = "secret" })
+    NS.CoopSync()
+    tickFor(1, 0.5)
+    expect(NS.GetChoices()["ns15"] ~= "secret",
+        "un vote secret non merite ne doit pas debloquer la fin secrete")
+    expect(NS.GetStatus() == "running", "la phase de choix doit continuer (secret refuse)")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : relais mort en pleine vague -> desync detecte, pas de soft-lock", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(6)
+    coopDriveToType("wave")
+    writeCoopIn({ teamRemaining = 3, mission = "ns06" })   -- relais vivant (ts frais)
+    NS.CoopSync()
+    killAll()
+    tickFor(2, 0.5)                       -- < coopStale : relais frais, la vague attend l'equipe
+    expect(not NS.GetCoop().relayLost, "relais frais : pas de desync")
+    expect(NS.GetPhaseInfo().type == "wave", "la vague attend l'equipe tant que le relais vit")
+    -- le relais meurt : plus rien ne reecrit coop_in (ts fige)
+    tickFor(8, 0.5)                       -- > coopStale sans nouveau ts
+    expect(NS.GetCoop().relayLost, "un relais fige > coopStale doit etre detecte")
+    -- l'hote a nettoye sa part en local : sans le relais on retombe sur le local
+    local idxBefore = NS.GetPhaseInfo().index
+    killAll()
+    tickFor(1, 0.5)
+    expect(NS.GetPhaseInfo().index ~= idxBefore or NS.GetStatus() ~= "running",
+        "relais mort : on retombe sur le compte local, la vague ne fige pas")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : relais vivant (ts qui avance) ne declenche jamais le desync", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(6)
+    coopDriveToType("wave")
+    for _ = 1, 20 do                      -- 20 x 0.5 s = 10 s, mais relais qui reecrit
+        writeCoopIn({ teamRemaining = 2, mission = "ns06" })   -- ts frais a chaque fois
+        NS.CoopSync()
+        tickFor(0.5, 0.5)
+    end
+    expect(not NS.GetCoop().relayLost, "un relais qui reecrit (ts avance) ne doit jamais etre 'perdu'")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : relais mort a 1 SEUL pair -> desync detecte (pas d'angle mort)", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(6)
+    coopDriveToType("wave")
+    writeCoopIn({ peerCount = 1, teamRemaining = 2, mission = "ns06" })   -- relais vivant, 1 pair
+    NS.CoopSync()
+    expect(not NS.GetCoop().relayLost, "relais frais : pas de desync")
+    tickFor(8, 0.5)                       -- ts fige, et il n'y a qu'UN pair (l'ancien angle mort)
+    expect(NS.GetCoop().relayLost, "un relais fige doit etre detecte MEME a peerCount==1")
+    local idxBefore = NS.GetPhaseInfo().index
+    killAll()
+    tickFor(1, 0.5)
+    expect(NS.GetPhaseInfo().index ~= idxBefore or NS.GetStatus() ~= "running",
+        "a 1 pair aussi, relais mort => compte local, la vague ne fige pas")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : quitter la session retablit le solo", fn = function()
+    NS = loadMod()
+    NS.HostCoop("T", "h")
+    expect(NS.GetCoop().active, "la session devrait etre active")
+    NS.LeaveCoop()
+    expect(not NS.GetCoop().active, "quitter doit desactiver le co-op")
+end })

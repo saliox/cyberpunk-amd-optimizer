@@ -1,0 +1,58 @@
+[size=6][b]🌃 NIGHT SHIFT[/b][/size]
+[size=3][i]15 scripted missions for Cyberpunk 2077 — a branching campaign where your choices reshape later missions and the finale. Sequel to SURTENSION. / 15 missions scénarisées — une campagne à embranchements où tes choix redessinent les missions suivantes et le final. Suite de SURTENSION.[/i][/size]
+
+[line]
+
+[size=5][b]🇬🇧 English[/b][/size]
+
+VOLT — the rogue AI you met in SURTENSION — left echoes in Night City's power grid. Scavs, cults, a corpo broker and Arasaka all want what's left of it. 15 contracts, rising stakes, and a finale with three endings including a hidden one.
+
+[b]What makes it different[/b]
+[list]
+[*][b]Choices that stick.[/b] Your decisions persist and change what comes next — dialogue, enemy numbers, who ambushes you, whether VOLT fights on your side. Two paths emerge: [b]Signal[/b] (protect VOLT's legacy) vs [b]Market[/b] (sell it all).
+[*][b]Cross-mission consequences.[/b] Sell a witness's shard and the Broker recognizes you later — and brings backup. Spare a cult and a different mission reveals the real culprit while another goes easier.
+[*][b]A finale that reads your whole run.[/b] CODA's ending, VOLT's help in the boss fight, and a [b]secret ending[/b] all depend on the path you walked. It ends with a generated campaign debrief.
+[*][b]9 mission types[/b] on one engine: dialogue, travel, combat waves, hold-the-zone, boss fights, timed defenses, multi-point collection, timed races (you can fail them), and branching choices.
+[*][b]Campaign structure[/b]: missions unlock as you progress, with a journal ([font=Courier New]NS.Journal()[/font]) and per-mission best-time records.
+[*]Full English + French, auto-detected. Persistent HUD. Robust cleanup (death, save-reload, abort all handled).
+[/list]
+
+[b]Requirements[/b]
+[list]
+[*][url=https://www.nexusmods.com/cyberpunk2077/mods/107]Cyber Engine Tweaks[/url] 1.31+
+[*][url=https://www.nexusmods.com/cyberpunk2077/mods/7780]Codeware[/url] 1.5+
+[/list]
+
+[b]Installation[/b]
+[list=1]
+[*]Extract into your game folder (or install with Vortex) — it ships the full [font=Courier New]bin/x64/plugins/cyber_engine_tweaks/mods/night_shift[/font] path.
+[*]In game, open CET → [b]Bindings[/b] → assign: next mission, start, abort, Choice A, Choice B, print position.
+[*][b]First run:[/b] use "print position" to calibrate mission coordinates in [font=Courier New]init.lua[/font]'s CONFIG for your preferred spots (defaults target the right districts but should be verified in game). Each mission is a data block at the top of the file.
+[/list]
+Console: [font=Courier New]NS = GetMod("night_shift")[/font] then [font=Courier New]NS.List()[/font], [font=Courier New]NS.Start(3)[/font] or [font=Courier New]NS.Start("ns10")[/font], [font=Courier New]NS.Choose("a")[/font], [font=Courier New]NS.Journal()[/font], [font=Courier New]NS.GetAlignment()[/font], [font=Courier New]NS.Abort()[/font].
+
+[line]
+
+[size=5][b]🇫🇷 Français[/b][/size]
+
+VOLT — l'IA sauvage rencontrée dans SURTENSION — a laissé des échos dans le réseau électrique de Night City. Charognards, sectes, un courtier corpo et Arasaka se disputent ce qui reste d'elle. 15 contrats, des enjeux croissants, et un final à trois issues dont une secrète.
+
+[b]Ce qui le distingue[/b]
+[list]
+[*][b]Des choix qui comptent.[/b] Tes décisions sont persistantes et changent la suite — dialogues, effectifs ennemis, qui t'embusque, si VOLT combat à tes côtés. Deux voies : [b]Signal[/b] (protéger l'héritage de VOLT) contre [b]Marché[/b] (tout monnayer).
+[*][b]Conséquences entre missions.[/b] Vends le shard d'un témoin et le Courtier te reconnaît plus tard — avec du renfort. Épargne une secte et une autre mission révèle le vrai coupable pendant qu'une troisième s'allège.
+[*][b]Un final qui lit toute ta partie.[/b] La fin de CODA, l'aide de VOLT au boss, et une [b]fin secrète[/b] dépendent de ta voie. Ça se conclut par un bilan de campagne généré.
+[*][b]9 types de missions[/b] sur un moteur : dialogue, trajet, vagues, zone à tenir, boss, défenses chronométrées, collecte multi-points, courses à échec possible, et choix à embranchements.
+[*][b]Structure de campagne[/b] : les missions se déverrouillent au fil de la progression, avec un journal ([font=Courier New]NS.Journal()[/font]) et des records de temps par mission.
+[*]FR + EN auto-détecté. HUD persistant. Nettoyage robuste (mort, rechargement, abandon tous gérés).
+[/list]
+
+[b]Prérequis[/b] : [url=https://www.nexusmods.com/cyberpunk2077/mods/107]Cyber Engine Tweaks[/url] 1.31+ et [url=https://www.nexusmods.com/cyberpunk2077/mods/7780]Codeware[/url] 1.5+.
+
+[b]Installation[/b] : extraire dans le dossier du jeu (ou via Vortex), puis dans CET → [b]Bindings[/b], assigner : mission suivante, démarrer, annuler, Choix A, Choix B, position. [b]Première run :[/b] recale les coordonnées avec la touche « position » (les préréglages visent les bons districts mais méritent vérification en jeu). Chaque mission est un bloc de données en tête de fichier.
+
+[line]
+
+[size=3][b]Companion mod / Mod compagnon :[/b] [b]SURTENSION[/b] — the original single mission this campaign follows from. / la mission d'origine dont cette campagne est la suite.[/size]
+
+[size=2]Not affiliated with CD PROJEKT RED. "Cyberpunk 2077" and "Night City" are trademarks of CD PROJEKT S.A. — The mod ships readable, commented Lua; tweak everything in the CONFIG block and the per-mission data (enemies, rewards, timings, coordinates, choice consequences).[/size]
