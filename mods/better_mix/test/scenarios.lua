@@ -252,6 +252,108 @@ table.insert(SCENARIOS, { name = "fenetre : supprimer un preset non-dernier reti
         "les presets restants gardent leurs valeurs")
 end })
 
+table.insert(SCENARIOS, { name = "mute : coupe un canal et retablit le volume d'avant", fn = function()
+    seedSettings()
+    loadMod()
+    MOD.SetChannel("music", 80)
+    MOD.ToggleMute("music")
+    expect(audioSetting("MusicVolume") == 0, "mute doit couper le canal (0)")
+    expect(MOD.IsMuted("music"), "le canal doit etre marque coupe")
+    MOD.ToggleMute("music")
+    expect(audioSetting("MusicVolume") == 80, "unmute doit rendre le volume d'avant (80)")
+    expect(not MOD.IsMuted("music"), "le canal ne doit plus etre coupe")
+end })
+
+table.insert(SCENARIOS, { name = "A/B : compare au defaut jeu puis revient au mix", fn = function()
+    seedSettings()
+    loadMod()
+    MOD.SetChannel("music", 30); MOD.SetChannel("dialogue", 100)
+    MOD.ToggleCompare()
+    expect(MOD.IsComparing(), "A/B doit etre actif")
+    expect(audioSetting("MusicVolume") == 100 and audioSetting("DialogVolume") == 100,
+        "en A/B on ecoute le defaut jeu (tout a 100)")
+    MOD.ToggleCompare()
+    expect(not MOD.IsComparing(), "A/B doit etre coupe")
+    expect(audioSetting("MusicVolume") == 30, "revenir doit restaurer ton mix (music=30)")
+end })
+
+table.insert(SCENARIOS, { name = "demarrage auto : le mix est re-applique au lancement suivant", fn = function()
+    seedSettings()
+    loadMod()
+    MOD.SetChannel("music", 20); MOD.SetChannel("sfx", 60)
+    MOD.SetStartup(true)
+    expect(MOD.GetStartup().enabled, "le demarrage auto doit etre actif")
+    -- nouveau lancement, meme dossier : le jeu repart a 100, le mod re-applique
+    SIM.settings["/audio/volume|MusicVolume"] = 100
+    SIM.settings["/audio/volume|SfxVolume"] = 100
+    loadMod()
+    expect(audioSetting("MusicVolume") == 20 and audioSetting("SfxVolume") == 60,
+        "le mix de demarrage doit etre re-applique au chargement")
+end })
+
+table.insert(SCENARIOS, { name = "demarrage auto : desactivable (plus de re-application)", fn = function()
+    seedSettings()
+    loadMod()
+    MOD.SetChannel("music", 20); MOD.SetStartup(true)
+    MOD.SetStartup(false)
+    expect(not MOD.GetStartup().enabled, "le demarrage auto doit etre coupe")
+    SIM.settings["/audio/volume|MusicVolume"] = 100
+    loadMod()
+    expect(audioSetting("MusicVolume") == 100, "sans demarrage auto, rien n'est re-applique")
+end })
+
+table.insert(SCENARIOS, { name = "cycle : la touche applique le prereglage suivant", fn = function()
+    seedSettings()
+    loadMod()
+    MOD.CyclePreset()
+    local a1 = MOD.GetActivePreset()
+    expect(a1 ~= nil, "cycler doit definir un preset actif")
+    MOD.CyclePreset()
+    local a2 = MOD.GetActivePreset()
+    expect(a2 ~= a1, "cycler deux fois doit changer de preset")
+end })
+
+table.insert(SCENARIOS, { name = "preset actif : suivi, remis a 'personnalise' au reglage manuel", fn = function()
+    seedSettings()
+    loadMod()
+    MOD.ApplyPreset("combat")
+    expect(MOD.GetActivePreset() ~= nil, "un preset applique doit etre actif")
+    MOD.SetChannel("music", 10)
+    expect(MOD.GetActivePreset() == nil, "un reglage manuel repasse en personnalise")
+end })
+
+table.insert(SCENARIOS, { name = "fenetre : le bouton mute d'un canal le coupe", fn = function()
+    seedSettings()
+    loadMod()
+    MOD.SetChannel("music", 70)
+    MOD.ShowWindow()
+    SIM.imgui.buttonPress["M##mm_music"] = true
+    draw()
+    expect(audioSetting("MusicVolume") == 0 and MOD.IsMuted("music"),
+        "le bouton mute doit couper le canal")
+end })
+
+table.insert(SCENARIOS, { name = "fenetre : le bouton A/B active la comparaison", fn = function()
+    seedSettings()
+    loadMod()
+    MOD.ShowWindow()
+    SIM.imgui.buttonPress["A/B défaut"] = true
+    draw()
+    expect(MOD.IsComparing(), "le bouton A/B doit activer la comparaison")
+end })
+
+table.insert(SCENARIOS, { name = "fenetre : le bouton Demarrer avec ce mix active le demarrage auto", fn = function()
+    seedSettings()
+    loadMod()
+    MOD.SetChannel("music", 25)
+    MOD.ShowWindow()
+    SIM.imgui.buttonPress["Démarrer avec ce mix"] = true
+    draw()
+    local su = MOD.GetStartup()
+    expect(su.enabled and su.values.music == 25,
+        "le bouton doit activer le demarrage auto avec le mix actuel")
+end })
+
 table.insert(SCENARIOS, { name = "fenetre : erreur ImGui en rendu -> fenetre coupee, pile reequilibree", fn = function()
     seedSettings()
     loadMod()

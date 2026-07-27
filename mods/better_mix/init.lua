@@ -1,11 +1,15 @@
 --------------------------------------------------------------------------
--- BETTER MIX 1.0 — mod CET pour Cyberpunk 2077
+-- BETTER MIX 1.1 — mod CET pour Cyberpunk 2077
 --------------------------------------------------------------------------
 -- Une TABLE DE MIXAGE en jeu : une fenêtre avec un curseur par canal audio
 -- (dialogues, effets, musique, radio, téléphone, général) et des PRÉRÉGLAGES
 -- SAUVEGARDÉS. Le mix par défaut de Cyberpunk noie souvent les dialogues sous
 -- la musique et les SFX ; ce mod te laisse le rééquilibrer une fois pour
 -- toutes et rappeler ton réglage d'un clic.
+--
+-- 1.1 : mute par canal, comparaison A/B (ton mix ↔ défaut jeu), préréglage
+--       actif affiché, DÉMARRAGE AUTO (applique ton mix à chaque lancement),
+--       et une touche pour cycler les préréglages sans ouvrir la fenêtre.
 --
 -- HONNÊTETÉ TECHNIQUE — ce que c'est / ce que ce n'est PAS :
 --   • Le jeu passe par Wwise et n'expose aux mods QUE le volume de chaque
@@ -69,6 +73,7 @@ local BUILTIN = {
 }
 
 local PRESETS_FILE = "presets.json"
+local CONFIG_FILE  = "config.json"   -- démarrage auto (mix appliqué au lancement)
 
 --------------------------------------------------------------------------
 -- Localisation
@@ -95,6 +100,21 @@ local LOCALES = {
         err_reserved = "Ce nom est réservé à un préréglage d'usine — choisis-en un autre.",
         win_opened   = "Table de mixage : ouverte",
         win_closed   = "Table de mixage : fermée",
+        win_active   = "Préréglage : %s",
+        custom       = "personnalisé",
+        comparing_tag = "comparaison (défaut jeu)",
+        win_compare  = "A/B défaut",
+        compare_on   = "A/B : défaut jeu — reclique pour revenir à ton mix.",
+        compare_off  = "Retour à ton mix.",
+        win_startup  = "Démarrage auto : %s",
+        on           = "activé",
+        off          = "désactivé",
+        win_set_startup   = "Démarrer avec ce mix",
+        win_clear_startup = "Désactiver",
+        startup_set     = "Ce mix s'appliquera à chaque lancement.",
+        startup_cleared = "Démarrage auto désactivé.",
+        startup_applied = "Mix de démarrage appliqué.",
+        cycle_hint      = "Cycle des préréglages : %s",
     },
     en = {
         loaded       = "[BETTER MIX] Loaded. Open the mixer (bound key) or GetMod(\"better_mix\").Help()",
@@ -116,6 +136,21 @@ local LOCALES = {
         err_reserved = "That name is reserved for a factory preset — pick another.",
         win_opened   = "Mixing desk: open",
         win_closed   = "Mixing desk: closed",
+        win_active   = "Preset: %s",
+        custom       = "custom",
+        comparing_tag = "comparing (game default)",
+        win_compare  = "A/B default",
+        compare_on   = "A/B: game default — click again to return to your mix.",
+        compare_off  = "Back to your mix.",
+        win_startup  = "Auto-start: %s",
+        on           = "on",
+        off          = "off",
+        win_set_startup   = "Start with this mix",
+        win_clear_startup = "Disable",
+        startup_set     = "This mix will apply on every launch.",
+        startup_cleared = "Auto-start disabled.",
+        startup_applied = "Startup mix applied.",
+        cycle_hint      = "Preset cycle: %s",
     },
 }
 
@@ -145,6 +180,12 @@ local M = {
     values = {},          -- id canal -> volume courant (0–100)
     original = nil,       -- instantané des volumes au chargement (pour Rétablir)
     userPresets = {},     -- { { name, values } … } chargés de presets.json
+    activePreset = nil,   -- nom du préréglage appliqué (nil = personnalisé)
+    muted = {},           -- id canal -> volume avant coupure (présent = coupé)
+    comparing = false,    -- A/B en cours (on écoute le défaut jeu)
+    compareBackup = nil,  -- mix à restaurer en sortant du A/B
+    startup = { enabled = false, values = nil },  -- démarrage auto (config.json)
+    cycleIdx = 0,         -- position dans le cycle des préréglages (touche)
     windowOpen = false,
     windowDisabled = false,
     nameBuffer = "",
@@ -157,6 +198,15 @@ local function clampVol(v)
     if not v then return 0 end
     if v < 0 then v = 0 elseif v > 100 then v = 100 end
     return math.floor(v + 0.5)
+end
+
+-- copie normalisée (bornée) d'un jeu de volumes, tous canaux présents
+local function copyValues(src)
+    local out = {}
+    for _, ch in ipairs(CONFIG.channels) do
+        out[ch.id] = clampVol((src and src[ch.id]) or ch.default)
+    end
+    return out
 end
 
 --------------------------------------------------------------------------
@@ -251,6 +301,9 @@ local function applyPreset(q)
     local vals, disp = findPreset(q)
     if not vals then return false end
     applyValues(vals)
+    M.activePreset = disp
+    M.muted = {}                 -- un préréglage pose des valeurs explicites
+    M.comparing = false; M.compareBackup = nil
     screenMessage(L.applied_preset:format(disp))
     print("[BETTER MIX] " .. L.applied_preset:format(disp))
     return true
@@ -340,9 +393,113 @@ end
 local function restoreOriginal()
     if not M.original then return 0 end
     local n = applyValues(M.original)
+    M.activePreset = nil
+    M.muted = {}
+    M.comparing = false; M.compareBackup = nil
     screenMessage(L.restored)
     print("[BETTER MIX] " .. L.restored)
     return n
+end
+
+--------------------------------------------------------------------------
+-- Démarrage auto (config.json) : appliquer ton mix à chaque lancement
+--------------------------------------------------------------------------
+
+local function saveConfig()
+    pcall(function()
+        local v = M.startup.values or {}
+        local f = io.open(CONFIG_FILE, "w")
+        if f then
+            f:write(string.format(
+                '{"startupEnabled":%s,"master":%d,"dialogue":%d,"sfx":%d,' ..
+                '"music":%d,"radio":%d,"phone":%d}',
+                M.startup.enabled and "true" or "false",
+                clampVol(v.master or 100), clampVol(v.dialogue or 100), clampVol(v.sfx or 100),
+                clampVol(v.music or 100), clampVol(v.radio or 100), clampVol(v.phone or 100)))
+            f:close()
+        end
+    end)
+end
+
+local function loadConfig()
+    pcall(function()
+        local f = io.open(CONFIG_FILE, "r")
+        if not f then return end
+        local raw = f:read("*a"); f:close()
+        if not raw or #raw > 8192 then return end
+        M.startup.enabled = raw:match('"startupEnabled"%s*:%s*true') ~= nil
+        local vals = {}
+        for _, ch in ipairs(CONFIG.channels) do
+            vals[ch.id] = clampVol(tonumber(raw:match('"' .. ch.id .. '"%s*:%s*(%-?%d+)')) or ch.default)
+        end
+        M.startup.values = vals
+    end)
+end
+
+-- enable=true : mémorise le mix ACTUEL comme mix de démarrage ; false : coupe
+local function setStartup(enable)
+    if enable then
+        M.startup.enabled = true
+        M.startup.values = copyValues(M.values)
+    else
+        M.startup.enabled = false
+    end
+    saveConfig()
+    return M.startup.enabled
+end
+
+--------------------------------------------------------------------------
+-- Mute par canal & comparaison A/B
+--------------------------------------------------------------------------
+
+local function channelExists(id)
+    for _, ch in ipairs(CONFIG.channels) do if ch.id == id then return true end end
+    return false
+end
+
+local function isMuted(id) return M.muted[id] ~= nil end
+
+-- coupe/rétablit un canal (mémorise le volume d'avant coupure)
+local function toggleMute(id)
+    if not channelExists(id) then return nil end
+    if M.muted[id] ~= nil then
+        M.values[id] = clampVol(M.muted[id]); M.muted[id] = nil
+    else
+        M.muted[id] = M.values[id] or 100
+        M.values[id] = 0
+    end
+    applyValues({ [id] = M.values[id] })
+    M.activePreset = nil
+    return isMuted(id)
+end
+
+-- A/B : bascule entre ton mix et le défaut jeu (tout à 100) pour comparer
+local function toggleCompare()
+    if M.comparing then
+        if M.compareBackup then applyValues(M.compareBackup) end
+        M.comparing = false; M.compareBackup = nil
+        screenMessage(L.compare_off)
+    else
+        M.compareBackup = copyValues(M.values)
+        M.muted = {}
+        applyValues({ master = 100, dialogue = 100, sfx = 100, music = 100, radio = 100, phone = 100 })
+        M.comparing = true
+        screenMessage(L.compare_on)
+    end
+    return M.comparing
+end
+
+-- applique le préréglage suivant (touche) sans ouvrir la fenêtre
+local function cyclePreset()
+    local list = listPresets()
+    if #list == 0 then return end
+    M.cycleIdx = (M.cycleIdx % #list) + 1
+    local p = list[M.cycleIdx]
+    applyValues(p.values)
+    M.activePreset = p.display
+    M.muted = {}
+    M.comparing = false; M.compareBackup = nil
+    screenMessage(L.cycle_hint:format(p.display))
 end
 
 --------------------------------------------------------------------------
@@ -357,18 +514,33 @@ local function renderWindow()
     ImGui.PushStyleColor(ImGuiCol.Border, 0.30, 0.91, 0.96, 0.55)
     if ImGui.Begin("BETTER MIX", flags) then
         ImGui.TextColored(0.30, 0.91, 0.96, 1.0, L.win_title)
+        -- préréglage actif (ou « personnalisé », ou A/B en cours)
+        local activeTxt = M.comparing and L.comparing_tag or (M.activePreset or L.custom)
+        ImGui.TextColored(0.99, 0.93, 0.04, 1.0, L.win_active:format(activeTxt))
         ImGui.Text(L.win_hint)
         ImGui.Separator()
 
-        -- un curseur par canal audio
+        -- un curseur + un bouton mute par canal audio
         for _, ch in ipairs(CONFIG.channels) do
             local cur = M.values[ch.id] or ch.default
             local v, changed = ImGui.SliderInt(T(ch.label), cur, 0, 100)
             if changed then
                 M.values[ch.id] = clampVol(v)
+                M.muted[ch.id] = nil          -- réglage manuel = plus « coupé »
+                M.activePreset = nil
                 if CONFIG.applyLive then M.pendingApply = true end
             end
+            ImGui.SameLine()
+            -- id de bouton stable (##mm_<canal>), libellé « M » / « M! » si coupé
+            if ImGui.Button("M" .. (isMuted(ch.id) and "!" or "") .. "##mm_" .. ch.id) then
+                toggleMute(ch.id)
+            end
         end
+
+        ImGui.Separator()
+        if ImGui.Button(L.win_compare) then toggleCompare() end   -- A/B défaut jeu
+        ImGui.SameLine()
+        if ImGui.Button(L.win_restore) then restoreOriginal() end
 
         ImGui.Separator()
         ImGui.Text(L.win_presets)
@@ -398,11 +570,17 @@ local function renderWindow()
             if ok then M.nameBuffer = "" end
         end
 
-        if ImGui.Button(L.win_restore) then restoreOriginal() end
-        ImGui.SameLine()
-        if ImGui.Button(L.win_close) then M.windowOpen = false end
+        -- démarrage auto : appliquer ce mix à chaque lancement
+        ImGui.Separator()
+        ImGui.Text(L.win_startup:format(M.startup.enabled and L.on or L.off))
+        if ImGui.Button(L.win_set_startup) then setStartup(true); screenMessage(L.startup_set) end
+        if M.startup.enabled then
+            ImGui.SameLine()
+            if ImGui.Button(L.win_clear_startup) then setStartup(false); screenMessage(L.startup_cleared) end
+        end
 
         ImGui.Separator()
+        if ImGui.Button(L.win_close) then M.windowOpen = false end
         ImGui.TextColored(0.66, 0.66, 0.72, 1.0, L.win_note)
         ImGui.TextColored(0.55, 0.55, 0.62, 1.0, L.win_eq_note)
     end
@@ -418,8 +596,14 @@ registerForEvent("onInit", function()
     LANG = detectLanguage()
     L = LOCALES[LANG]
     loadPresets()
+    loadConfig()
     M.original = captureCurrent()
     for id, v in pairs(M.original) do M.values[id] = v end
+    -- DÉMARRAGE AUTO : si activé, applique ton mix mémorisé dès le chargement
+    if M.startup.enabled and M.startup.values then
+        applyValues(M.startup.values)
+        screenMessage(L.startup_applied)
+    end
     M.windowOpen = CONFIG.openOnStart and true or false
     print(L.loaded)
 end)
@@ -456,6 +640,14 @@ registerHotkey("bm_restore", "BETTER MIX — rétablir l'audio d'origine / resto
     restoreOriginal()
 end)
 
+registerHotkey("bm_cycle", "BETTER MIX — préréglage suivant / cycle presets", function()
+    cyclePreset()
+end)
+
+registerHotkey("bm_compare", "BETTER MIX — comparer A/B (défaut jeu) / A-B compare", function()
+    toggleCompare()
+end)
+
 --------------------------------------------------------------------------
 -- API publique (console + tests)
 --------------------------------------------------------------------------
@@ -472,6 +664,8 @@ return {
         for _, ch in ipairs(CONFIG.channels) do
             if ch.id == id then
                 M.values[id] = clampVol(value)
+                M.muted[id] = nil
+                M.activePreset = nil
                 applyValues({ [id] = M.values[id] })
                 return M.values[id]
             end
@@ -479,6 +673,16 @@ return {
         return nil
     end,
     ApplyPreset = applyPreset,
+    CyclePreset = cyclePreset,
+    ToggleMute = toggleMute,
+    IsMuted = isMuted,
+    ToggleCompare = toggleCompare,
+    IsComparing = function() return M.comparing end,
+    GetActivePreset = function() return M.activePreset end,
+    SetStartup = setStartup,
+    GetStartup = function()
+        return { enabled = M.startup.enabled, values = M.startup.values and copyValues(M.startup.values) or nil }
+    end,
     SavePreset  = savePreset,
     DeletePreset = deletePreset,
     ListPresets = function()
@@ -505,6 +709,9 @@ return {
         print("  .ApplyPreset(nom)    — 'dialogue','cinematic','combat','driving','night','default' ou un préréglage à toi")
         print("  .SetChannel(id, 0-100) — id : master, dialogue, sfx, music, radio, phone")
         print("  .SavePreset(nom) / .DeletePreset(nom) / .ListPresets()")
+        print("  .CyclePreset()       — applique le préréglage suivant (aussi sur une touche)")
+        print("  .ToggleMute(id) / .ToggleCompare() — couper un canal / comparer A/B au défaut")
+        print("  .SetStartup(true)    — applique le mix ACTUEL à chaque lancement (.SetStartup(false) pour couper)")
         print("  .Restore()           — rétablit les volumes d'origine")
         print("  Rappel : mixage par CANAUX (le jeu n'expose pas d'EQ par fréquences).")
     end,
