@@ -117,6 +117,7 @@ LOCALES.fr = {
     hud_distance      = "%d m",
     hud_coop          = "CO-OP %s · %d joueur(s)",
     hud_ping_warn     = "⚠ Latence — Hôte %d ms · Joueur %d ms",
+    hud_coop_stale    = "⚠ CO-OP désynchronisé — relais injoignable (solo local)",
     coop_hosted       = "Session co-op créée : %s — lance la mission, tes potes suivront.",
     coop_joined       = "Session co-op rejointe : %s — tu suis l'hôte.",
     coop_left         = "Session co-op quittée.",
@@ -210,6 +211,7 @@ LOCALES.en = {
     hud_distance      = "%d m",
     hud_coop          = "CO-OP %s · %d player(s)",
     hud_ping_warn     = "⚠ Latency — Host %d ms · Player %d ms",
+    hud_coop_stale    = "⚠ CO-OP out of sync — relay unreachable (local solo)",
     coop_hosted       = "Co-op session created: %s — start the mission, friends will follow.",
     coop_joined       = "Co-op session joined: %s — following the host.",
     coop_left         = "Co-op session left.",
@@ -316,6 +318,9 @@ local Coop = {
             selfPingMs = 0, worstPingMs = 0 },
     inbReceived = false,  -- a-t-on déjà reçu un état d'équipe du relais ?
     noData = 0,           -- secondes en co-op sans données d'équipe (relais absent ?)
+    lastRelayTs = 0,      -- dernier battement de cœur (ts) vu du relais
+    staleTimer = 0,       -- secondes depuis que le ts du relais n'avance plus
+    relayStale = false,   -- relais mort/injoignable en pleine session ?
 }
 
 local function coopDefaultInb()
@@ -375,6 +380,14 @@ local function coopReadIn()
             worstPingMs   = num("worstPingMs", 0),
         }
         Coop.inbReceived = true   -- on a des données d'équipe fraîches
+        -- battement de cœur du relais : s'il avance, le relais est vivant ;
+        -- s'il fige (relais fermé/crashé), on le détecte via staleTimer.
+        local ts = num("ts", 0)
+        if ts ~= 0 and ts ~= Coop.lastRelayTs then
+            Coop.lastRelayTs = ts
+            Coop.staleTimer = 0
+            Coop.relayStale = false
+        end
     end)
 end
 
@@ -388,6 +401,7 @@ function Coop.host(code, id)
     Coop.code = code or "NS-COOP"
     Coop.id = id or ("host-" .. coopClock())
     Coop.inbReceived = false; Coop.noData = 0
+    Coop.lastRelayTs = 0; Coop.staleTimer = 0; Coop.relayStale = false
     Coop.inb.peerCount = 1
     coopWriteOut()
     return Coop.code
@@ -398,6 +412,7 @@ function Coop.join(code, id)
     Coop.code = code or "NS-COOP"
     Coop.id = id or ("join-" .. coopClock())
     Coop.inbReceived = false; Coop.noData = 0
+    Coop.lastRelayTs = 0; Coop.staleTimer = 0; Coop.relayStale = false
     coopReadIn()
     coopWriteOut()
     return Coop.code
@@ -409,8 +424,12 @@ function Coop.leave()
     Coop.outRemaining, Coop.outPhaseIndex = 0, 0
     Coop.inb = coopDefaultInb()     -- purge l'état d'équipe (pas de vote résiduel)
     Coop.inbReceived = false; Coop.noData = 0
+    Coop.lastRelayTs = 0; Coop.staleTimer = 0; Coop.relayStale = false
     pcall(function() local f = io.open(COOP_OUT, "w"); if f then f:write('{"left":true}'); f:close() end end)
 end
+
+-- Relais mort/injoignable en pleine session (coop_in figé) ?
+function Coop.relayLost() return Coop.active() and Coop.relayStale end
 
 -- L'hôte publie la mission/phase courante ; ignoré côté joiner
 function Coop.setMissionPhase(missionId, phaseIndex, phaseType, objective)
@@ -426,8 +445,9 @@ function Coop.setVote(key) Coop.outVote = key or "" end
 function Coop.setResolved(key) Coop.outResolved = key or "" end
 
 -- Total d'hostiles restants dans l'équipe (somme relayée) ; nil si co-op off
+-- ou si le relais est injoignable (on retombe alors sur le compte LOCAL).
 function Coop.teamRemaining()
-    if not Coop.active() then return nil end
+    if not Coop.active() or Coop.relayStale then return nil end
     return Coop.inb.teamRemaining or 0
 end
 
@@ -437,6 +457,7 @@ end
 -- bout de coopStale secondes, on débloque (relais absent) pour ne pas figer.
 function Coop.teamClear()
     if not Coop.active() then return true end
+    if Coop.relayStale then return true end   -- relais injoignable : ne pas figer la vague
     if Coop.inbReceived then return (Coop.inb.teamRemaining or 0) <= 0 end
     return Coop.noData >= CONFIG.coopStale
 end
@@ -479,8 +500,14 @@ end
 
 function Coop.sync(dt)
     if not Coop.active() then return end
-    if not Coop.inbReceived then Coop.noData = Coop.noData + (dt or 0) end
-    Coop.syncTimer = Coop.syncTimer + (dt or 0)
+    dt = dt or 0
+    if not Coop.inbReceived then
+        Coop.noData = Coop.noData + dt
+    elseif Coop.peerCount() > 1 then
+        Coop.staleTimer = Coop.staleTimer + dt   -- ts figé > coopStale = relais injoignable
+        if Coop.staleTimer > CONFIG.coopStale then Coop.relayStale = true end
+    end
+    Coop.syncTimer = Coop.syncTimer + dt
     if Coop.syncTimer < CONFIG.coopSync then return end
     Coop.syncTimer = 0
     coopWriteOut()
@@ -1272,15 +1299,19 @@ local function refreshHud()
         barFrac = math.min(1.0, Mission.hackProgress / CONFIG.hackDuration)
         barText = string.format("%d%%", math.floor(barFrac * 100))
     end
-    local coopLine, pingLine
+    local coopLine, pingLine, staleLine
     if Coop.active() then
         coopLine = L.hud_coop:format(Coop.role, Coop.peerCount())
-        local pw = Coop.pingWarning()
-        if pw then pingLine = L.hud_ping_warn:format(pw.host, pw.player) end
+        if Coop.relayLost() then
+            staleLine = L.hud_coop_stale
+        else
+            local pw = Coop.pingWarning()
+            if pw then pingLine = L.hud_ping_warn:format(pw.host, pw.player) end
+        end
     end
     Mission.hud = { objective = objective, detail = detail,
                     barFrac = barFrac, barText = barText,
-                    coop = coopLine, ping = pingLine }
+                    coop = coopLine, ping = pingLine, stale = staleLine }
 end
 
 local function renderHud()
@@ -1300,6 +1331,7 @@ local function renderHud()
     if ImGui.Begin("SURTENSION_HUD", flags) then
         ImGui.TextColored(0.99, 0.93, 0.04, 1.0, "◤ SURTENSION")
         if h.coop then ImGui.TextColored(0.30, 0.91, 0.96, 1.0, h.coop) end
+        if h.stale then ImGui.TextColored(1.0, 0.45, 0.20, 1.0, h.stale) end
         if h.ping then ImGui.TextColored(0.98, 0.62, 0.10, 1.0, h.ping) end
         ImGui.Separator()
         ImGui.Text(h.objective)
@@ -1479,8 +1511,10 @@ return {
     CoopSync = function() Coop.syncNow() end,
     GetCoop = function()
         return { active = Coop.active(), role = Coop.role, code = Coop.code,
-                 peers = Coop.peerCount(), teamRemaining = Coop.teamRemaining() }
+                 peers = Coop.peerCount(), teamRemaining = Coop.teamRemaining(),
+                 relayLost = Coop.relayLost() }
     end,
+    CoopRelayLost = function() return Coop.relayLost() end,
     -- outil de test : saute à une phase avec son setup complet,
     -- ex. GetMod("surtension").Jump("boss")
     Jump = function(phase)

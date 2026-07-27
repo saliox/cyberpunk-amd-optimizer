@@ -38,6 +38,7 @@ const MAX_MSG         = 8192;   // longueur max d'une ligne JSON
 const RATE_WINDOW_MS  = 1000;   // fenêtre de comptage de débit
 const RATE_MAX        = 50;     // messages max par fenêtre (le mod en envoie ~5/s)
 const IN_MAX_BYTES    = 16384;  // coop_in écrit borné
+const MAX_PER_IP      = 4;      // connexions simultanées max par IP source (anti-flood)
 
 // --- Validation / bornage des champs (toute entrée réseau est hostile) -------
 function sInt(v, min, max, dflt) {
@@ -178,6 +179,7 @@ if (opt.mode === 'host') {
   const peers = {};            // key -> coop_out nettoyé (+ ts)
   const clients = new Set();   // sockets AUTHENTIFIÉES (dans l'équipe)
   const allSockets = new Set();// TOUTES les sockets vivantes (même non authentifiées)
+  const perIp = new Map();     // ip -> nb de sockets vivantes (cap par source)
   function recompute() {
     const merged = mergePeers(peers, now());
     // pire ping parmi les joueurs ENCORE dans l'équipe ET déjà mesurés :
@@ -189,6 +191,9 @@ if (opt.mode === 'host') {
       if (typeof c._rtt === 'number' && c._rtt > worst) worst = c._rtt;
     }
     merged.worstPingMs = worst;
+    // battement de cœur : un ts qui avance à chaque recompute. Le mod détecte
+    // un relais mort/injoignable quand ce ts cesse d'avancer (coop_in figé).
+    merged.ts = now();
     // l'hôte est le serveur : son ping vers la logique autoritaire = 0
     writeIn(Object.assign({}, merged, { selfPingMs: 0 }));
     // chaque client reçoit SON propre ping (RTT mesuré, 0 tant qu'inconnu)
@@ -243,9 +248,17 @@ if (opt.mode === 'host') {
       console.error('[relay] connexion refusée (max ' + opt.maxClients + ' atteint)');
       return;
     }
+    const ip = sock.remoteAddress || '?';
+    // cap par IP : un attaquant ne peut pas monopoliser tous les slots (même
+    // avec des connexions non authentifiées reconnectées en boucle).
+    if ((perIp.get(ip) || 0) >= MAX_PER_IP) {
+      try { sock.destroy(); } catch (_) {}
+      console.error('[relay] connexion refusée (max ' + MAX_PER_IP + ' par IP : ' + ip + ')');
+      return;
+    }
+    perIp.set(ip, (perIp.get(ip) || 0) + 1);
     allSockets.add(sock);
     sock._lastRecv = now();
-    const ip = sock.remoteAddress;
     let authed = false;
     let buf = '';
     let peerKey = 'c' + crypto.randomBytes(4).toString('hex'); // id serveur, pas celui du client
@@ -311,8 +324,13 @@ if (opt.mode === 'host') {
       }
       if (buf.length > MAX_BUF) return drop('tampon saturé (pas de fin de ligne)');
     });
+    let cleaned = false;
     const cleanup = () => {
+      if (cleaned) return;            // close ET error peuvent tous deux tirer
+      cleaned = true;
       allSockets.delete(sock); clients.delete(sock);
+      const c = (perIp.get(ip) || 1) - 1;
+      if (c <= 0) perIp.delete(ip); else perIp.set(ip, c);
       if (peers[peerKey]) { delete peers[peerKey]; recompute(); }
     };
     sock.on('timeout', () => drop('inactif'));
@@ -324,34 +342,51 @@ if (opt.mode === 'host') {
     console.log(`[relay] hôte à l'écoute sur ${opt.bind}:${opt.port} (dir: ${opt.dir})`));
 } else {
   // Client : s'authentifie, envoie son coop_out, écrit le coop_in reçu.
-  const sock = net.createConnection(opt.port, opt.hostIp, () => {
-    console.log(`[relay] connecté à ${opt.hostIp}:${opt.port} — authentification…`);
-    const o = readOut();
-    try { sock.write(JSON.stringify({ type: 'hello', token: opt.token, peer: o || {} }) + '\n'); } catch (_) {}
-  });
-  sock.setTimeout(IDLE_TIMEOUT);
-  let buf = '';
-  sock.on('data', d => {
-    buf += d.toString('utf8');
-    let nl;
-    while ((nl = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
-      if (line.length > MAX_MSG) continue;
-      try {
-        const msg = JSON.parse(line);
-        if (!msg) continue;
-        if (msg.type === 'ping') { try { sock.write(JSON.stringify({ type: 'pong', t: msg.t }) + '\n'); } catch (_) {} }
-        else if (msg.type === 'in') writeIn(msg.state);
-      } catch (_) {}
-    }
-    if (buf.length > MAX_BUF) { try { sock.destroy(); } catch (_) {} return; }
-  });
-  const outTimer = setInterval(() => {
-    const o = readOut();
-    if (o) { try { sock.write(JSON.stringify({ type: 'out', peer: o }) + '\n'); } catch (_) {} }
-  }, 200);
-  sock.on('timeout', () => { console.error('[relay] hôte muet — fermeture'); try { sock.destroy(); } catch (_) {} });
-  sock.on('error', e => console.error('[relay] erreur:', e.message));
-  // hôte parti : on arrête d'écrire dans le vide et on sort proprement
-  sock.on('close', () => { clearInterval(outTimer); console.error('[relay] connexion fermée'); process.exit(0); });
+  // RECONNEXION AUTOMATIQUE (backoff 1→8 s) : si l'hôte redémarre ou coupe un
+  // instant, on retente au lieu de mourir — la session survit aux micro-coupures.
+  const BACKOFF_MAX = 8000;
+  let backoff = 1000;
+  let outTimer = null;
+
+  function connectClient() {
+    const sock = net.createConnection(opt.port, opt.hostIp, () => {
+      console.log(`[relay] connecté à ${opt.hostIp}:${opt.port} — authentification…`);
+      backoff = 1000;   // connexion réussie -> réarme le backoff
+      const o = readOut();
+      try { sock.write(JSON.stringify({ type: 'hello', token: opt.token, peer: o || {} }) + '\n'); } catch (_) {}
+      if (outTimer) clearInterval(outTimer);
+      outTimer = setInterval(() => {
+        const o2 = readOut();
+        if (o2) { try { sock.write(JSON.stringify({ type: 'out', peer: o2 }) + '\n'); } catch (_) {} }
+      }, 200);
+    });
+    sock.setTimeout(IDLE_TIMEOUT);
+    let buf = '';
+    sock.on('data', d => {
+      buf += d.toString('utf8');
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+        if (line.length > MAX_MSG) continue;
+        try {
+          const msg = JSON.parse(line);
+          if (!msg) continue;
+          if (msg.type === 'ping') { try { sock.write(JSON.stringify({ type: 'pong', t: msg.t }) + '\n'); } catch (_) {} }
+          else if (msg.type === 'in') writeIn(msg.state);
+        } catch (_) {}
+      }
+      if (buf.length > MAX_BUF) { try { sock.destroy(); } catch (_) {} }
+    });
+    sock.on('timeout', () => { console.error('[relay] hôte muet — fermeture'); try { sock.destroy(); } catch (_) {} });
+    sock.on('error', e => console.error('[relay] erreur:', e.message));
+    let closed = false;
+    sock.on('close', () => {
+      if (closed) return; closed = true;               // error + close ne planifient qu'une fois
+      if (outTimer) { clearInterval(outTimer); outTimer = null; }
+      console.error('[relay] connexion fermée — nouvelle tentative dans ' + Math.round(backoff / 1000) + ' s');
+      setTimeout(connectClient, backoff);
+      backoff = Math.min(BACKOFF_MAX, backoff * 2);
+    });
+  }
+  connectClient();
 }

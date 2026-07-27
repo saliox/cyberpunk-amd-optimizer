@@ -436,16 +436,18 @@ end })
 -- Le relais réseau est simulé en écrivant coop_in.json (ce que le relais
 -- livrerait) et en lisant coop_out.json (ce que le mod publie).
 
+COOP_TS = 100000               -- battement de cœur simulé du relais (avance à chaque écriture)
 function writeCoopIn(o)
     o = o or {}
+    COOP_TS = o.ts or (COOP_TS + 1)   -- un ts frais = relais vivant ; figer o.ts = relais mort
     local f = io.open("coop_in.json", "w")
     f:write(string.format(
         '{"schema":1,"code":"T","host":"h","peerCount":%d,"mission":"%s",' ..
         '"phaseIndex":%d,"phaseType":"%s","objective":"%s",' ..
-        '"teamRemaining":%d,"resolved":"%s","hostTs":1,' ..
+        '"teamRemaining":%d,"resolved":"%s","ts":%d,' ..
         '"selfPingMs":%d,"worstPingMs":%d}',
         o.peerCount or 2, o.mission or "", o.phaseIndex or 0, o.phaseType or "",
-        o.objective or "", o.teamRemaining or 0, o.resolved or "",
+        o.objective or "", o.teamRemaining or 0, o.resolved or "", COOP_TS,
         o.selfPingMs or 0, o.worstPingMs or 0))
     f:close()
 end
@@ -633,6 +635,41 @@ table.insert(SCENARIOS, { name = "co-op : un vote 'secret' non merite est refuse
     expect(NS.GetChoices()["ns15"] ~= "secret",
         "un vote secret non merite ne doit pas debloquer la fin secrete")
     expect(NS.GetStatus() == "running", "la phase de choix doit continuer (secret refuse)")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : relais mort en pleine vague -> desync detecte, pas de soft-lock", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(6)
+    coopDriveToType("wave")
+    writeCoopIn({ teamRemaining = 3, mission = "ns06" })   -- relais vivant (ts frais)
+    NS.CoopSync()
+    killAll()
+    tickFor(2, 0.5)                       -- < coopStale : relais frais, la vague attend l'equipe
+    expect(not NS.GetCoop().relayLost, "relais frais : pas de desync")
+    expect(NS.GetPhaseInfo().type == "wave", "la vague attend l'equipe tant que le relais vit")
+    -- le relais meurt : plus rien ne reecrit coop_in (ts fige)
+    tickFor(8, 0.5)                       -- > coopStale sans nouveau ts
+    expect(NS.GetCoop().relayLost, "un relais fige > coopStale doit etre detecte")
+    -- l'hote a nettoye sa part en local : sans le relais on retombe sur le local
+    local idxBefore = NS.GetPhaseInfo().index
+    killAll()
+    tickFor(1, 0.5)
+    expect(NS.GetPhaseInfo().index ~= idxBefore or NS.GetStatus() ~= "running",
+        "relais mort : on retombe sur le compte local, la vague ne fige pas")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : relais vivant (ts qui avance) ne declenche jamais le desync", fn = function()
+    NS = loadMod(); NS.SetFreePlay(true)
+    NS.HostCoop("T", "h")
+    NS.Start(6)
+    coopDriveToType("wave")
+    for _ = 1, 20 do                      -- 20 x 0.5 s = 10 s, mais relais qui reecrit
+        writeCoopIn({ teamRemaining = 2, mission = "ns06" })   -- ts frais a chaque fois
+        NS.CoopSync()
+        tickFor(0.5, 0.5)
+    end
+    expect(not NS.GetCoop().relayLost, "un relais qui reecrit (ts avance) ne doit jamais etre 'perdu'")
 end })
 
 table.insert(SCENARIOS, { name = "co-op : quitter la session retablit le solo", fn = function()

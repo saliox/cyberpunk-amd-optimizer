@@ -129,6 +129,14 @@ async function main() {
   console.log('  INFO  ping mesuré (localhost) : hôte ' + hp.worstPingMs +
     ' ms (pire joueur) · client ' + cp.selfPingMs + ' ms');
 
+  // 1d) battement de cœur : le ts de coop_in doit AVANCER (le mod s'en sert
+  //     pour détecter un relais mort/injoignable). On lit deux fois.
+  const ts1 = readIn(hostDir).ts;
+  await sleep(400);
+  const ts2 = readIn(hostDir).ts;
+  ok(typeof ts1 === 'number' && typeof ts2 === 'number' && ts2 > ts1,
+    'le ts du relais avance (heartbeat vivant) : ' + ts1 + ' -> ' + ts2);
+
   // 2) l'équipe nettoie : chacun met remaining à 0 -> teamRemaining converge à 0
   writeOut(hostDir, { id: 'host', role: 'host', code: 'ABCD', mission: 'ns06',
     phaseIndex: 2, phaseType: 'wave', remaining: 0, vote: '', resolved: '' });

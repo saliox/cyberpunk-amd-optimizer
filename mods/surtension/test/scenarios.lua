@@ -264,16 +264,18 @@ end })
 -- Le relais réseau est simulé : on écrit coop_in.json (ce que le relais
 -- livrerait) et on lit coop_out.json (ce que le mod publie).
 
+COOP_TS = 100000               -- battement de cœur simulé du relais (avance à chaque écriture)
 function writeCoopIn(o)
     o = o or {}
+    COOP_TS = o.ts or (COOP_TS + 1)   -- ts frais = relais vivant ; figer o.ts = relais mort
     local f = io.open("coop_in.json", "w")
     f:write(string.format(
         '{"schema":1,"code":"T","host":"h","peerCount":%d,"mission":"%s",' ..
         '"phaseIndex":%d,"phaseType":"%s","objective":"%s",' ..
-        '"teamRemaining":%d,"resolved":"%s","hostTs":1,' ..
+        '"teamRemaining":%d,"resolved":"%s","ts":%d,' ..
         '"selfPingMs":%d,"worstPingMs":%d}',
         o.peerCount or 2, o.mission or "", o.phaseIndex or 0, o.phaseType or "",
-        o.objective or "", o.teamRemaining or 0, o.resolved or "",
+        o.objective or "", o.teamRemaining or 0, o.resolved or "", COOP_TS,
         o.selfPingMs or 0, o.worstPingMs or 0))
     f:close()
 end
@@ -442,6 +444,38 @@ table.insert(SCENARIOS, { name = "finale (secours) : un marqueur a 12 m ne s'aut
     teleport(GRID)                       -- 0 m
     tick(0.2)
     expect(MOD.GetPhase() ~= "finale", "a 0 m la fin se valide bien")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : relais mort en vague 1 -> desync detecte, pas de soft-lock", fn = function()
+    loadMod()
+    MOD.HostCoop("T", "h")
+    MOD.Start()
+    toWave1()
+    tickFor(3)
+    writeCoopIn({ teamRemaining = 4, mission = "surtension" })   -- relais vivant (ts frais)
+    MOD.CoopSync()
+    killAll()
+    tickFor(2)                           -- < coopStale : la vague attend l'equipe
+    expect(not MOD.GetCoop().relayLost, "relais frais : pas de desync")
+    expect(MOD.GetPhase() == "wave1", "la vague attend l'equipe tant que le relais vit")
+    tickFor(8)                           -- > coopStale sans nouveau ts -> relais mort
+    expect(MOD.GetCoop().relayLost, "un relais fige > coopStale doit etre detecte")
+    killAll()
+    tickFor(1)
+    expect(MOD.GetPhase() ~= "wave1", "relais mort : on retombe sur le local, la vague ne fige pas")
+end })
+
+table.insert(SCENARIOS, { name = "co-op : relais vivant (ts qui avance) ne declenche jamais le desync", fn = function()
+    loadMod()
+    MOD.HostCoop("T", "h")
+    MOD.Start()
+    toWave1()
+    for _ = 1, 16 do
+        writeCoopIn({ teamRemaining = 2, mission = "surtension" })   -- ts frais a chaque fois
+        MOD.CoopSync()
+        tickFor(0.5)
+    end
+    expect(not MOD.GetCoop().relayLost, "un relais qui reecrit ne doit jamais etre 'perdu'")
 end })
 
 table.insert(SCENARIOS, { name = "co-op : quitter retablit le solo", fn = function()
