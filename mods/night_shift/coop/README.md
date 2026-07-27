@@ -46,8 +46,8 @@ Le relais hôte est un serveur TCP qui peut être exposé à Internet (redirecti
 - 🔑 **Authentification par jeton partagé** : sans le bon `--token`, la connexion est fermée. Comparaison à temps constant (anti timing-attack). Jamais de serveur ouvert : sans jeton fourni, il en génère un et l'affiche.
 - 🛡️ **Pas d'usurpation d'hôte** : un pair distant est **toujours** forcé au rôle « join ». Seul le fichier local de la machine hôte fait autorité sur la mission/phase — un intrus ne peut pas détourner la partie.
 - 🧹 **Toutes les entrées réseau sont validées et bornées** avant usage : nombres plafonnés (pas de `teamRemaining` géant), chaînes nettoyées (guillemets/accolades/contrôles retirés → aucune injection dans `coop_in.json`) et tronquées.
-- 🚦 **Anti-DoS** : limite de connexions simultanées (`--max-clients`, 8 par défaut), limite de débit par connexion, plafond de taille de tampon et de message, timeout d'inactivité, et fenêtre de handshake courte. Un pair déconnecté sort de l'équipe au heartbeat périmé.
-- 🔒 **Défense en profondeur côté mod** : le mod ignore un `coop_in.json` anormalement gros.
+- 🚦 **Anti-DoS** : limite de connexions simultanées (`--max-clients`, 8 par défaut) **et cap par IP source** (4) pour qu'un attaquant ne monopolise pas tous les slots avec des connexions non authentifiées, limite de débit par connexion, plafond de taille de tampon et de message, timeout d'inactivité (jugé sur la dernière **donnée reçue**, pas sur nos pings), et fenêtre de handshake courte. Un pair déconnecté sort de l'équipe au heartbeat périmé.
+- 🔒 **Défense en profondeur côté mod** : le mod ignore un `coop_in.json` anormalement gros, et **détecte un relais mort** (voir « En jeu »).
 - 🌐 **Bonnes pratiques** : n'ouvre le port que le temps de la session, préfère un VPN (Radmin/Hamachi/Tailscale) à une redirection de port publique, et ne partage le jeton qu'avec tes coéquipiers. Choisis un `--token` long si tu exposes le port publiquement.
 
 Validé par `node test-security.js` (bornage, anti-usurpation, jeton) et par `test-relay.js` (rejet d'un intrus au mauvais jeton, en conditions réseau réelles).
@@ -56,6 +56,8 @@ Validé par `node test-security.js` (bornage, anti-usurpation, jeton) et par `te
 
 - Le HUD affiche `CO-OP hôte/join · N joueur(s)` et le **compteur d'hostiles d'équipe**.
 - **Avertissement de latence discret** : si le ping dépasse `pingWarnMs` (120 ms par défaut, réglable dans `CONFIG`), une ligne orange apparaît sous le HUD — `⚠ Latence — Hôte 0 ms · Joueur X ms`. L'hôte y voit le **pire ping** des joueurs connectés ; chaque joiner y voit **sa** latence vers l'hôte. Rien ne s'affiche tant que le ping reste correct. Le relais mesure le ping par un ping/pong horodaté chaque seconde (RTT réel).
+- **Détection « relais injoignable »** : le relais écrit un battement de cœur (`ts`) dans `coop_in.json`. Si ce ts fige (relais fermé/crashé) plus de ~6 s, le mod affiche `⚠ CO-OP désynchronisé — relais injoignable` et **retombe sur ton compte local** (les vagues/boss se valident sur tes propres hostiles) : plus de vague qui ne se termine jamais parce que la somme d'équipe est gelée. `GetCoop().relayLost` le signale aussi.
+- **Reconnexion automatique** : si l'hôte redémarre ou coupe un instant, le relais client retente tout seul (backoff 1→8 s) — pas besoin de le relancer.
 - Les **vagues et boss** ne se terminent que quand **toute l'équipe** a nettoyé sa part — chacun contribue.
 - Les **choix** (Choix A / Choix B) sont des **votes** : la majorité décide, l'hôte tranche les égalités, et tout le monde bascule sur la même fin en même temps.
 - `NS.LeaveCoop()` (ou la touche dédiée) quitte la session et rétablit le solo.
