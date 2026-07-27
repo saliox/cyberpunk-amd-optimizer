@@ -180,6 +180,7 @@ if (opt.mode === 'host') {
   const clients = new Set();   // sockets AUTHENTIFIÉES (dans l'équipe)
   const allSockets = new Set();// TOUTES les sockets vivantes (même non authentifiées)
   const perIp = new Map();     // ip -> nb de sockets vivantes (cap par source)
+  let hbSeq = 0;               // battement de cœur MONOTONE (immunisé aux sauts d'horloge)
   function recompute() {
     const merged = mergePeers(peers, now());
     // pire ping parmi les joueurs ENCORE dans l'équipe ET déjà mesurés :
@@ -192,8 +193,9 @@ if (opt.mode === 'host') {
     }
     merged.worstPingMs = worst;
     // battement de cœur : un ts qui avance à chaque recompute. Le mod détecte
-    // un relais mort/injoignable quand ce ts cesse d'avancer (coop_in figé).
-    merged.ts = now();
+    // un relais mort quand ce ts cesse d'avancer. Compteur MONOTONE (pas Date.now)
+    // pour qu'un recul d'horloge (NTP) ne fige pas un relais sain à tort.
+    merged.ts = (hbSeq = hbSeq + 1);
     // l'hôte est le serveur : son ping vers la logique autoritaire = 0
     writeIn(Object.assign({}, merged, { selfPingMs: 0 }));
     // chaque client reçoit SON propre ping (RTT mesuré, 0 tant qu'inconnu)
@@ -220,18 +222,22 @@ if (opt.mode === 'host') {
       try { c.write(JSON.stringify({ type: 'ping', t }) + '\n'); } catch (_) {}
     }
   }, 1000);
-  // l'état local de l'hôte (fichier de confiance, mais borné quand même)
+  // État local de l'hôte + CADENCE UNIQUE de recompute (~5/s). coop_in n'est
+  // écrit et diffusé QUE d'ici — jamais directement sur un message entrant —
+  // pour qu'un pair authentifié qui inonde de « out » ne déclenche pas 50
+  // writeFileSync + diffusions/s (amplification DoS). Les « out » ne font que
+  // mettre à jour peers ; ce tick les agrège.
   setInterval(() => {
     const o = readOut();
-    if (o) { const p = sanitizePeer(o, 'host'); if (p) { p.id = 'local-host'; p.ts = now(); peers['local-host'] = p; recompute(); } }
+    if (o) { const p = sanitizePeer(o, 'host'); if (p) { p.id = 'local-host'; p.ts = now(); peers['local-host'] = p; } }
+    recompute();
   }, 200);
   // purge des pairs périmés (déconnexions silencieuses) + reap des sockets muettes
   setInterval(() => {
-    const n = now(); let changed = false;
+    const n = now();
     for (const k of Object.keys(peers)) {
-      if (k !== 'local-host' && n - peers[k].ts > STALE_MS) { delete peers[k]; changed = true; }
+      if (k !== 'local-host' && n - peers[k].ts > STALE_MS) delete peers[k];   // recompute au prochain tick 200 ms
     }
-    if (changed) recompute();
     // Le timeout natif de la socket est remis à zéro par NOS écritures (pings),
     // il ne détecte donc plus un client muet. On juge sur la dernière DONNÉE
     // REÇUE et on ferme au-delà de IDLE_TIMEOUT (anti-slot squatté).
@@ -289,8 +295,8 @@ if (opt.mode === 'host') {
         clients.add(sock);
         sock._peerKey = peerKey;   // lie la socket à son entrée d'équipe (ping)
         console.error('[relay] ' + ip + ' authentifié (' + peerKey + ')');
-        if (msg.peer) { const p = sanitizePeer(msg.peer, 'join'); if (p) { p.ts = now(); peers[peerKey] = p; recompute(); } }
-        return;
+        if (msg.peer) { const p = sanitizePeer(msg.peer, 'join'); if (p) { p.ts = now(); peers[peerKey] = p; } }
+        return;   // agrégé au prochain tick 200 ms (pas de recompute par message)
       }
       if (msg.type === 'pong') {   // réponse à NOTRE ping -> RTT mesuré
         // on n'accepte qu'un horodatage qu'on a RÉELLEMENT envoyé récemment :
@@ -308,7 +314,9 @@ if (opt.mode === 'host') {
       }
       if (msg.type === 'out' && msg.peer) {
         const p = sanitizePeer(msg.peer, 'join');   // rôle distant TOUJOURS join
-        if (p) { p.ts = now(); peers[peerKey] = p; recompute(); }
+        // met seulement à jour l'état ; l'agrégation/écriture est faite par le
+        // tick 200 ms (anti-amplification : pas 1 writeFileSync par message)
+        if (p) { p.ts = now(); peers[peerKey] = p; }
       }
     }
 
@@ -331,7 +339,7 @@ if (opt.mode === 'host') {
       allSockets.delete(sock); clients.delete(sock);
       const c = (perIp.get(ip) || 1) - 1;
       if (c <= 0) perIp.delete(ip); else perIp.set(ip, c);
-      if (peers[peerKey]) { delete peers[peerKey]; recompute(); }
+      if (peers[peerKey]) delete peers[peerKey];   // recompute au prochain tick 200 ms
     };
     sock.on('timeout', () => drop('inactif'));
     sock.on('close', cleanup);
