@@ -295,6 +295,40 @@ table.insert(SCENARIOS, { name = "pont : set_cap ne touche PAS au VSync et reste
     expect(SIM.settings["/video/display|VSync"] == true, "VSync jamais modifié par set_cap")
 end })
 
+table.insert(SCENARIOS, { name = "pont : set_cap PUIS apply_low_latency -> restore rend bien le VSync", fn = function()
+    loadMod()
+    feedFps(120, 3)
+    SIM.settings["/video/display|VSync"] = true      -- VSync d'origine = ON
+    SIM.settings["/video/display|MaxFPS"] = 30        -- cap d'origine = 30
+    writeJson("bridge_command.json", '{"id":1,"cmd":"set_cap","cap":90}')
+    MOD.PollCommands()
+    writeJson("bridge_command.json", '{"id":2,"cmd":"apply_low_latency"}')
+    MOD.PollCommands()
+    expect(SIM.settings["/video/display|VSync"] == false, "apply doit couper le VSync")
+    MOD.Restore()
+    -- la capture additive doit avoir mémorisé le VSync malgré le set_cap prealable
+    expect(SIM.settings["/video/display|VSync"] == true, "restore doit RENDRE le VSync d'origine (true)")
+    expect(SIM.settings["/video/display|MaxFPS"] == 30, "restore doit rendre le cap d'origine (30)")
+end })
+
+table.insert(SCENARIOS, { name = "pont : une commande d'id 0 est bien traitee", fn = function()
+    loadMod()
+    feedFps(120, 3)
+    writeJson("bridge_command.json", '{"id":0,"cmd":"set_cap","cap":77}')
+    MOD.PollCommands()
+    expect(SIM.settings["/video/display|MaxFPS"] == 77, "la commande id:0 doit etre executee")
+end })
+
+table.insert(SCENARIOS, { name = "mesure : un delta NaN est ignore (pas de pollution des stats)", fn = function()
+    loadMod()
+    feedFps(100, 2)
+    local before = MOD.GetStats().frametimeMs
+    frame(0/0)   -- NaN
+    local after = MOD.GetStats().frametimeMs
+    expect(after == after, "les stats ne doivent pas devenir NaN")
+    expect(math.abs(after - before) < 0.5, "un delta NaN ne doit pas polluer la moyenne")
+end })
+
 table.insert(SCENARIOS, { name = "pont : cap piloté par l'app (override du conseil)", fn = function()
     loadMod()
     feedFps(120, 3)   -- cap conseillé = 116

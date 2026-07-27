@@ -200,11 +200,18 @@ if (opt.mode === 'host') {
     }
   }
   // mesure du ping : on envoie un ping horodaté à chaque client toutes les
-  // secondes ; il renvoie un pong avec le même horodatage -> RTT = maintenant - t
+  // secondes ; il renvoie un pong avec le même horodatage -> RTT = maintenant - t.
+  // On garde les DERNIERS horodatages envoyés (pas seulement le dernier) : un
+  // client à RTT > 1 s renverrait sinon un pong « périmé » qui serait rejeté,
+  // et le joueur le plus lent — celui que l'avertissement veut montrer —
+  // s'afficherait à tort à 0 ms.
+  const PING_HISTORY = 5;   // tolère un RTT jusqu'à ~5 s
   setInterval(() => {
     const t = now();
     for (const c of clients) {
-      c._lastPingT = t;   // mémorise l'horodatage envoyé (valide le pong reçu)
+      if (!c._pings) c._pings = [];
+      c._pings.push(t);
+      if (c._pings.length > PING_HISTORY) c._pings.shift();
       try { c.write(JSON.stringify({ type: 'ping', t }) + '\n'); } catch (_) {}
     }
   }, 1000);
@@ -273,10 +280,16 @@ if (opt.mode === 'host') {
         return;
       }
       if (msg.type === 'pong') {   // réponse à NOTRE ping -> RTT mesuré
-        // on n'accepte que l'horodatage EXACT qu'on a envoyé : un pong forgé
-        // ({ t: 0/null/ancien }) ne peut pas gonfler worstPingMs.
-        if (sock._lastPingT && Number(msg.t) === sock._lastPingT) {
-          sock._rtt = sInt(now() - sock._lastPingT, 0, 60000, 0);
+        // on n'accepte qu'un horodatage qu'on a RÉELLEMENT envoyé récemment :
+        // un pong forgé ({ t: 0/null/deviné }) ne peut pas gonfler worstPingMs.
+        const t = Number(msg.t);
+        const arr = sock._pings;
+        if (arr) {
+          const idx = arr.indexOf(t);
+          if (idx >= 0) {
+            sock._rtt = sInt(now() - t, 0, 60000, 0);
+            arr.splice(0, idx + 1);   // consomme ce ping et les plus anciens
+          }
         }
         return;
       }
@@ -333,11 +346,12 @@ if (opt.mode === 'host') {
     }
     if (buf.length > MAX_BUF) { try { sock.destroy(); } catch (_) {} return; }
   });
-  sock.on('timeout', () => { console.error('[relay] hôte muet — fermeture'); try { sock.destroy(); } catch (_) {} });
-  sock.on('error', e => console.error('[relay] erreur:', e.message));
-  sock.on('close', () => console.error('[relay] connexion fermée'));
-  setInterval(() => {
+  const outTimer = setInterval(() => {
     const o = readOut();
     if (o) { try { sock.write(JSON.stringify({ type: 'out', peer: o }) + '\n'); } catch (_) {} }
   }, 200);
+  sock.on('timeout', () => { console.error('[relay] hôte muet — fermeture'); try { sock.destroy(); } catch (_) {} });
+  sock.on('error', e => console.error('[relay] erreur:', e.message));
+  // hôte parti : on arrête d'écrire dans le vide et on sort proprement
+  sock.on('close', () => { clearInterval(outTimer); console.error('[relay] connexion fermée'); process.exit(0); });
 }

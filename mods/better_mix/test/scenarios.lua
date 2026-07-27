@@ -354,6 +354,51 @@ table.insert(SCENARIOS, { name = "fenetre : le bouton Demarrer avec ce mix activ
         "le bouton doit activer le demarrage auto avec le mix actuel")
 end })
 
+table.insert(SCENARIOS, { name = "A/B : editer un canal pendant l'A/B en sort et conserve l'edition", fn = function()
+    seedSettings()
+    loadMod()
+    MOD.SetChannel("music", 30)
+    MOD.ToggleCompare()                       -- le jeu joue le defaut (100)
+    MOD.SetChannel("dialogue", 50)            -- edition pendant l'A/B
+    expect(not MOD.IsComparing(), "editer pendant l'A/B doit en sortir")
+    expect(audioSetting("MusicVolume") == 30 and audioSetting("DialogVolume") == 50,
+        "l'edition est conservee et le mix complet reecrit (pas de perte)")
+end })
+
+table.insert(SCENARIOS, { name = "A/B : un canal coupe survit a un cycle de comparaison", fn = function()
+    seedSettings()
+    loadMod()
+    MOD.SetChannel("music", 80)
+    MOD.ToggleMute("music")                   -- music=0, memorise 80
+    MOD.ToggleCompare(); MOD.ToggleCompare()  -- A/B aller-retour
+    expect(MOD.IsMuted("music"), "le canal doit rester marque coupe apres l'A/B")
+    expect(audioSetting("MusicVolume") == 0, "le canal coupe reste a 0 apres l'A/B")
+    MOD.ToggleMute("music")
+    expect(audioSetting("MusicVolume") == 80, "la valeur d'avant-coupure (80) survit a l'A/B")
+end })
+
+table.insert(SCENARIOS, { name = "A/B : sauver / demarrage pendant l'A/B persiste TON mix, pas le defaut", fn = function()
+    seedSettings()
+    loadMod()
+    MOD.SetChannel("music", 20)
+    MOD.ToggleCompare()                       -- le jeu joue 100 partout
+    MOD.SavePreset("Mix")
+    expect(MOD.GetPreset("Mix").music == 20, "sauver pendant l'A/B doit garder ton mix (20), pas 100")
+    MOD.SetStartup(true)
+    expect(MOD.GetStartup().values.music == 20, "le demarrage auto capture ton mix (20), pas le defaut")
+end })
+
+table.insert(SCENARIOS, { name = "A/B : mute pendant l'A/B coupe vraiment le canal", fn = function()
+    seedSettings()
+    loadMod()
+    MOD.SetChannel("music", 70)
+    MOD.ToggleCompare()                       -- jeu a 100
+    MOD.ToggleMute("music")                   -- mute pendant l'A/B
+    expect(not MOD.IsComparing(), "mute pendant l'A/B doit en sortir")
+    expect(audioSetting("MusicVolume") == 0 and MOD.IsMuted("music"),
+        "mute pendant l'A/B : canal coupe (0) ET marque, pas audible")
+end })
+
 table.insert(SCENARIOS, { name = "fenetre : erreur ImGui en rendu -> fenetre coupee, pile reequilibree", fn = function()
     seedSettings()
     loadMod()

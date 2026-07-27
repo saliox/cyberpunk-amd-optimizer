@@ -420,6 +420,30 @@ table.insert(SCENARIOS, { name = "co-op : sans relais, la vague ne se fige pas (
         "sans relais, la vague doit finir par avancer (pas de blocage co-op)")
 end })
 
+table.insert(SCENARIOS, { name = "co-op : un 'resolved' perime ne s'auto-applique pas a la mission suivante", fn = function()
+    loadMod()
+    MOD.HostCoop("T", "h")
+    writeCoopIn({ mission = "surtension", resolved = "grid" })
+    MOD.CoopSync()                       -- inb.resolved = "grid"
+    os.remove("coop_in.json")            -- relais parti / fichier disparu
+    MOD.Jump("finale")                   -- cancelMission -> resetMission purge inb.resolved
+    tickFor(1)
+    expect(MOD.GetPhase() == "finale",
+        "sans vote frais, la finale ne doit pas se conclure sur un resolved perime")
+end })
+
+table.insert(SCENARIOS, { name = "finale (secours) : un marqueur a 12 m ne s'auto-valide pas (choiceReach)", fn = function()
+    loadMod()
+    MOD.Jump("finale")
+    tickFor(37)                          -- bascule sur le choix par deplacement
+    teleport({ x = GRID.x + 12, y = GRID.y, z = GRID.z })   -- 12 m : > choiceReach (8), < reachDistance (15)
+    tick(0.2)
+    expect(MOD.GetPhase() == "finale", "a 12 m la fin ne doit PAS se valider (garde-fou choiceReach)")
+    teleport(GRID)                       -- 0 m
+    tick(0.2)
+    expect(MOD.GetPhase() ~= "finale", "a 0 m la fin se valide bien")
+end })
+
 table.insert(SCENARIOS, { name = "co-op : quitter retablit le solo", fn = function()
     loadMod()
     MOD.HostCoop("T", "h")

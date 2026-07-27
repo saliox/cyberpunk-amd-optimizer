@@ -64,6 +64,9 @@ local CONFIG = {
 
     spawnRadius    = 12.0,  -- rayon de spawn autour de l'arène
     reachDistance  = 15.0,  -- distance pour valider un point de mission
+    choiceReach    = 8.0,   -- rayon de validation d'une FIN à la marche (secours) :
+                            -- PLUS PETIT que reachDistance, sinon un marqueur proche
+                            -- du joueur s'auto-validerait dès la bascule de secours
     hackDistance   = 4.0,   -- distance max pendant le piratage
     hackDuration   = 15.0,  -- secondes d'override (harceleurs à mi-course !)
     bossDelay      = 8.0,   -- les renforts arrivent d'abord, GRIDLOCK ensuite
@@ -844,6 +847,10 @@ local function resetMission()
     if Coop.isHost() then Coop.setMissionPhase(nil, 0, "", "") end
     Coop.setLocalRemaining(0)
     Coop.setVote("")
+    -- purge un vote résolu résiduel : une nouvelle partie ne doit pas
+    -- s'auto-conclure sur un « resolved » laissé par la précédente
+    Coop.inb.resolved = ""
+    Coop.outResolved = ""
 end
 
 -- Annulation propre : restaure le monde, y compris l'heure si on l'a forcée.
@@ -1099,7 +1106,7 @@ local function applyEnding(key)
         -- Night City se rallume : aube + ciel dégagé
         pcall(function() Game.GetTimeSystem():SetGameTimeByHMS(6, 30, 0) end)
         setWeather("24h_weather_sunny")
-        Game.AddToInventory("Items.money", CONFIG.rewardGridMoney)
+        pcall(function() Game.AddToInventory("Items.money", CONFIG.rewardGridMoney) end)
         pcall(function() Game.AddExp("StreetCred", CONFIG.rewardGridCred) end)
         -- la surprise de Regina : une Quadra Avenger dans ton garage
         pcall(function()
@@ -1108,8 +1115,8 @@ local function applyEnding(key)
     else
         playSound("ui_glitch_start")
         -- la nuit du blackout reste en place (choix narratif)
-        Game.AddToInventory("Items.money", CONFIG.rewardSellMoney)
-        Game.AddToInventory(CONFIG.rewardSellItem, 1)
+        pcall(function() Game.AddToInventory("Items.money", CONFIG.rewardSellMoney) end)
+        pcall(function() Game.AddToInventory(CONFIG.rewardSellItem, 1) end)
         pcall(function() Game.AddExp("StreetCred", CONFIG.rewardSellCred) end)
     end
 
@@ -1196,9 +1203,9 @@ local function updateFinale(delta)
     else
         -- choix par déplacement (solo, ou co-op après échec du vote) :
         -- chooseEnding applique directement puisque fallbackChoice est vrai
-        if distanceTo(CONFIG.gridPos) <= CONFIG.reachDistance then
+        if distanceTo(CONFIG.gridPos) <= CONFIG.choiceReach then
             chooseEnding("grid")
-        elseif distanceTo(CONFIG.sellPos) <= CONFIG.reachDistance then
+        elseif distanceTo(CONFIG.sellPos) <= CONFIG.choiceReach then
             chooseEnding("sell")
         end
     end

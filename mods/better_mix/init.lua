@@ -182,8 +182,7 @@ local M = {
     userPresets = {},     -- { { name, values } … } chargés de presets.json
     activePreset = nil,   -- nom du préréglage appliqué (nil = personnalisé)
     muted = {},           -- id canal -> volume avant coupure (présent = coupé)
-    comparing = false,    -- A/B en cours (on écoute le défaut jeu)
-    compareBackup = nil,  -- mix à restaurer en sortant du A/B
+    comparing = false,    -- A/B en cours (on écoute le défaut jeu ; M.values intact)
     startup = { enabled = false, values = nil },  -- démarrage auto (config.json)
     cycleIdx = 0,         -- position dans le cycle des préréglages (touche)
     windowOpen = false,
@@ -219,23 +218,27 @@ local function settingsSystem()
     return sys
 end
 
--- Écrit un jeu de volumes dans les réglages du jeu. Renvoie le nb appliqué.
-local function applyValues(values)
+-- Écrit des volumes dans le jeu (SettingsSystem) SANS toucher l'état du mod.
+-- Sert à la comparaison A/B : on fait entendre un mix sans écraser M.values.
+local function writeToGame(values)
     local sys = settingsSystem()
     local n = 0
     for _, ch in ipairs(CONFIG.channels) do
-        local target = values[ch.id]
-        if target ~= nil then
-            target = clampVol(target)
-            M.values[ch.id] = target
-            if sys then
-                local ok = pcall(function() sys:GetVar(ch.group, ch.var):SetValue(target) end)
-                if ok then n = n + 1 end
-            end
+        if values[ch.id] ~= nil and sys then
+            local ok = pcall(function() sys:GetVar(ch.group, ch.var):SetValue(clampVol(values[ch.id])) end)
+            if ok then n = n + 1 end
         end
     end
     if sys then pcall(function() sys:ConfirmChanges() end) end
     return n
+end
+
+-- Applique des volumes ET met à jour l'état du mod (M.values). Renvoie le nb.
+local function applyValues(values)
+    for _, ch in ipairs(CONFIG.channels) do
+        if values[ch.id] ~= nil then M.values[ch.id] = clampVol(values[ch.id]) end
+    end
+    return writeToGame(values)
 end
 
 -- Lit les volumes ACTUELS du jeu (pour initialiser les curseurs et Rétablir)
@@ -303,7 +306,11 @@ local function applyPreset(q)
     applyValues(vals)
     M.activePreset = disp
     M.muted = {}                 -- un préréglage pose des valeurs explicites
-    M.comparing = false; M.compareBackup = nil
+    M.comparing = false
+    -- garde le cycle (touche) synchronisé avec le préréglage appliqué
+    for i, p in ipairs(listPresets()) do
+        if p.display == disp then M.cycleIdx = i; break end
+    end
     screenMessage(L.applied_preset:format(disp))
     print("[BETTER MIX] " .. L.applied_preset:format(disp))
     return true
@@ -395,7 +402,7 @@ local function restoreOriginal()
     local n = applyValues(M.original)
     M.activePreset = nil
     M.muted = {}
-    M.comparing = false; M.compareBackup = nil
+    M.comparing = false
     screenMessage(L.restored)
     print("[BETTER MIX] " .. L.restored)
     return n
@@ -462,28 +469,31 @@ local function isMuted(id) return M.muted[id] ~= nil end
 -- coupe/rétablit un canal (mémorise le volume d'avant coupure)
 local function toggleMute(id)
     if not channelExists(id) then return nil end
+    M.comparing = false          -- une action explicite sort de l'A/B
     if M.muted[id] ~= nil then
         M.values[id] = clampVol(M.muted[id]); M.muted[id] = nil
     else
         M.muted[id] = M.values[id] or 100
         M.values[id] = 0
     end
-    applyValues({ [id] = M.values[id] })
+    writeToGame(M.values)        -- écrit le mix COMPLET (corrige aussi un A/B en cours)
     M.activePreset = nil
     return isMuted(id)
 end
 
--- A/B : bascule entre ton mix et le défaut jeu (tout à 100) pour comparer
+local DEFAULT_MIX = { master = 100, dialogue = 100, sfx = 100, music = 100, radio = 100, phone = 100 }
+
+-- A/B : bascule ce que JOUE LE JEU entre ton mix et le défaut (tout à 100),
+-- sans jamais toucher M.values ni la table mute — ton mix reste la vérité.
+-- Ainsi éditer/mute/sauver/démarrage pendant l'A/B lisent toujours ton vrai mix.
 local function toggleCompare()
     if M.comparing then
-        if M.compareBackup then applyValues(M.compareBackup) end
-        M.comparing = false; M.compareBackup = nil
+        M.comparing = false
+        writeToGame(M.values)          -- retour à ton mix
         screenMessage(L.compare_off)
     else
-        M.compareBackup = copyValues(M.values)
-        M.muted = {}
-        applyValues({ master = 100, dialogue = 100, sfx = 100, music = 100, radio = 100, phone = 100 })
         M.comparing = true
+        writeToGame(DEFAULT_MIX)        -- écoute le défaut jeu (M.values intact)
         screenMessage(L.compare_on)
     end
     return M.comparing
@@ -498,7 +508,7 @@ local function cyclePreset()
     applyValues(p.values)
     M.activePreset = p.display
     M.muted = {}
-    M.comparing = false; M.compareBackup = nil
+    M.comparing = false
     screenMessage(L.cycle_hint:format(p.display))
 end
 
@@ -528,6 +538,8 @@ local function renderWindow()
                 M.values[ch.id] = clampVol(v)
                 M.muted[ch.id] = nil          -- réglage manuel = plus « coupé »
                 M.activePreset = nil
+                -- éditer sort de l'A/B : on réécrit ton mix complet tout de suite
+                if M.comparing then M.comparing = false; writeToGame(M.values) end
                 if CONFIG.applyLive then M.pendingApply = true end
             end
             ImGui.SameLine()
@@ -663,10 +675,13 @@ return {
     SetChannel = function(id, value)
         for _, ch in ipairs(CONFIG.channels) do
             if ch.id == id then
+                local wasComparing = M.comparing
                 M.values[id] = clampVol(value)
                 M.muted[id] = nil
                 M.activePreset = nil
-                applyValues({ [id] = M.values[id] })
+                M.comparing = false
+                -- si on sortait d'un A/B, réécrire le mix complet ; sinon ce canal
+                applyValues(wasComparing and M.values or { [id] = M.values[id] })
                 return M.values[id]
             end
         end

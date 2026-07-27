@@ -235,7 +235,7 @@ end
 -- Le recalcul + l'actualisation de l'affichage sont throttlés (l'écran n'a
 -- pas besoin de plus de 4 rafraîchissements/seconde).
 local function sample(delta)
-    if not delta or delta <= 0 then return end
+    if not delta or delta ~= delta or delta <= 0 then return end  -- rejette nil/NaN/≤0
     M.idx = (M.idx % CONFIG.window) + 1
     M.frames[M.idx] = delta
     if M.count < CONFIG.window then M.count = M.count + 1 end
@@ -286,17 +286,27 @@ local function applySettings(list, autoCapValue)
     return applied
 end
 
--- Lit les valeurs ACTUELLES des réglages (pour pouvoir les restaurer)
-local function captureCurrent(list)
+-- Mémorise la valeur d'origine de chaque réglage de `list` PAS ENCORE capturé
+-- dans M.restore (capture additive, par clé group|var). Ainsi un set_cap
+-- partiel suivi d'un apply complet capture bien le VSync d'origine (et ne
+-- l'écrase pas), au lieu de sauter la capture parce que M.restore n'est plus
+-- vide — ce qui rendait le VSync non restaurable.
+local function captureInto(list)
     local sys = nil
     pcall(function() sys = Game.GetSettingsSystem() end)
-    if not sys then return {} end
-    local snap = {}
+    if not sys then return end
+    local seen = {}
+    for _, s in ipairs(M.restore) do seen[s.group .. "|" .. s.var] = true end
     for _, s in ipairs(list) do
-        local ok, val = pcall(function() return sys:GetVar(s.group, s.var):GetValue() end)
-        if ok then snap[#snap + 1] = { group = s.group, var = s.var, value = val } end
+        local key = s.group .. "|" .. s.var
+        if not seen[key] then
+            local ok, val = pcall(function() return sys:GetVar(s.group, s.var):GetValue() end)
+            if ok then
+                M.restore[#M.restore + 1] = { group = s.group, var = s.var, value = val }
+                seen[key] = true
+            end
+        end
     end
-    return snap
 end
 
 -- Réapplique un instantané de réglages (= annuler)
@@ -355,7 +365,7 @@ local function applyLowLatency(capOverride)
     if cap <= 0 then cap = Profiles[resolutionKey()] or 60 end  -- profil mémo, sinon 60
 
     -- capture les réglages d'origine AVANT la 1re modification (pour Restore)
-    if #M.restore == 0 then M.restore = captureCurrent(CONFIG.latencySettings) end
+    captureInto(CONFIG.latencySettings)   -- capture additive (VSync + cap)
 
     local applied = applySettings(CONFIG.latencySettings, cap)
     if #applied == 0 then
@@ -406,7 +416,7 @@ local function applyCapOnly(cap)
     for _, s in ipairs(CONFIG.latencySettings) do
         if s.autoCap then capList[#capList + 1] = s end
     end
-    if #M.restore == 0 then M.restore = captureCurrent(capList) end
+    captureInto(capList)   -- capture additive du seul cap (n'écrase pas VSync)
     local applied = applySettings(capList, cap)
     if #applied > 0 then M.applied = true end
     return applied
@@ -427,7 +437,8 @@ local STATUS_FILE  = "bridge_status.json"
 local COMMAND_FILE = "bridge_command.json"
 local ACK_FILE     = "bridge_ack.json"
 
-local Bridge = { writeTimer = 0, readTimer = 0, lastCmdId = 0, seq = 0 }
+-- lastCmdId = nil (pas 0) : une 1re commande d'id 0 doit être traitée
+local Bridge = { writeTimer = 0, readTimer = 0, lastCmdId = nil, seq = 0 }
 
 local function nowTs()
     local ok, t = pcall(os.time)
@@ -652,9 +663,13 @@ end
 -- Mesure chaque frame (pur Lua, négligeable) ; l'affichage, l'auto-tune et
 -- le pont vers l'app sont throttlés / conditionnels.
 registerForEvent("onUpdate", function(delta)
-    sample(delta)
-    autoTuneTick(delta)
-    bridgeTick(delta)
+    -- pcall par symétrie avec onDraw : rien ne remonte du tick même si un
+    -- appel jeu/IO transitoirement nil survient hors des pcall internes
+    pcall(function()
+        sample(delta)
+        autoTuneTick(delta)
+        bridgeTick(delta)
+    end)
 end)
 
 -- L'app peut aussi être arrêtée proprement : on laisse un dernier statut.

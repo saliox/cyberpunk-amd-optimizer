@@ -1393,8 +1393,12 @@ local function startEpilogue(lines, rewards)
     Run.epLines = seq
     Run.epEndAt = linesEndAt(Run.epLines, 4)
     rewards = rewards or {}
-    if rewards.money and rewards.money > 0 then Game.AddToInventory("Items.money", rewards.money) end
-    if rewards.item then Game.AddToInventory(rewards.item, 1) end
+    -- pcall (comme AddExp/vehicle voisins) : un TweakDBID d'item invalide ne
+    -- doit pas faire remonter une erreur du tick onUpdate
+    if rewards.money and rewards.money > 0 then
+        pcall(function() Game.AddToInventory("Items.money", rewards.money) end)
+    end
+    if rewards.item then pcall(function() Game.AddToInventory(rewards.item, 1) end) end
     if rewards.cred and rewards.cred > 0 then
         pcall(function() Game.AddExp("StreetCred", rewards.cred) end)
     end
